@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TCGP Inventory Matcher</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>TCGP Inventory Matcher</h1>
+    <p class="subtitle">Match a portfolio export against TCGplayer pricing sheets.</p>
+  </header>
+
+  <main>
+    <!-- Upload -->
+    <section id="upload-section" class="card">
+      <h2>1. Upload export.csv</h2>
+      <p>Drop your portfolio export here, or pick a file. You can also re-run against
+         the existing <code>inputs/export.csv</code>.</p>
+
+      <div id="dropzone" class="dropzone" tabindex="0">
+        <p class="dropzone-text">Drop export.csv here</p>
+        <input type="file" id="file-input" accept=".csv" hidden />
+        <button type="button" id="pick-btn">Choose file…</button>
+        <button type="button" id="rerun-btn" class="secondary">Re-run existing</button>
+      </div>
+
+      <p id="upload-status" class="status"></p>
+    </section>
+
+    <!-- Match summary -->
+    <section id="summary-section" class="card hidden">
+      <h2>2. Match results</h2>
+      <div id="summary-stats" class="stats-grid"></div>
+      <p id="summary-meta" class="meta"></p>
+      <div class="actions">
+        <button type="button" id="open-link-btn">1. Linking — needs review</button>
+        <button type="button" id="open-unmatched-btn" class="secondary">Unmatched</button>
+        <button type="button" id="open-sheet-btn" class="secondary">2. Reviewing — matched cards</button>
+      </div>
+    </section>
+
+    <!-- Review queue -->
+    <section id="review-section" class="card hidden">
+      <div class="review-header">
+        <div>
+          <h2 id="review-title">Linking</h2>
+          <p id="review-progress" class="meta">0 of 0 reviewed</p>
+        </div>
+        <div class="review-nav">
+          <label class="filter-label">
+            Showing:
+            <select id="filter-select">
+              <option value="review">Needs review</option>
+              <option value="unmatched">Unmatched</option>
+            </select>
+          </label>
+          <button type="button" id="prev-btn" class="secondary" title="← prev">← Prev</button>
+          <button type="button" id="next-btn" class="secondary" title="→ next">Next →</button>
+          <button type="button" id="back-btn" class="secondary" title="Back to summary">Done</button>
+        </div>
+      </div>
+
+      <div id="review-empty" class="empty-state hidden">
+        <p>No review rows. Either everything auto-matched, or you've decided every row.</p>
+      </div>
+
+      <div id="review-body" class="review-grid">
+        <!-- Hero image -->
+        <div class="hero">
+          <img id="hero-img" src="" alt="Card preview" />
+          <p id="hero-caption" class="hero-caption"></p>
+        </div>
+
+        <!-- Inventory info -->
+        <div class="inv-panel">
+          <h3>Inventory</h3>
+          <dl id="inv-data" class="inv-data"></dl>
+          <p id="review-reason" class="reason"></p>
+          <p id="decision-badge" class="decision-badge hidden"></p>
+        </div>
+
+        <!-- Candidate cards -->
+        <div class="candidates" id="candidates"></div>
+
+        <!-- Linking toolbar — only actions that *change the link* belong here.
+             Attributes (personal / psa / bad / ignore) live on the spreadsheet view. -->
+        <div class="toolbar">
+          <button type="button" data-action="confirm" class="primary">
+            <kbd>Enter</kbd> Confirm selected
+          </button>
+          <button type="button" data-action="skip" class="secondary">
+            <kbd>S</kbd> No match
+          </button>
+          <button type="button" data-action="undecide" class="secondary ghost"
+                  title="Clear decision for this row">Clear</button>
+        </div>
+
+        <p class="kbd-help">
+          <kbd>1</kbd>–<kbd>9</kbd> select candidate ·
+          <kbd>←</kbd>/<kbd>→</kbd> navigate ·
+          <kbd>Enter</kbd> confirm ·
+          <kbd>S</kbd> no match
+        </p>
+      </div>
+    </section>
+
+    <!-- Reviewing matched cards (spreadsheet) -->
+    <section id="sheet-section" class="card hidden">
+      <div class="review-header">
+        <div>
+          <h2>Reviewing matched cards</h2>
+          <p id="sheet-meta" class="meta"></p>
+        </div>
+        <div class="review-nav">
+          <input type="search" id="sheet-search" placeholder="Search name or set…" />
+          <select id="sheet-attr-filter">
+            <option value="">All attributes</option>
+            <option value="for_sale">For sale (default)</option>
+            <option value="personal">Personal</option>
+            <option value="psa">PSA</option>
+            <option value="bad">Bad condition</option>
+            <option value="ignore">Ignore</option>
+          </select>
+          <button type="button" id="sheet-back-btn" class="secondary">Done</button>
+        </div>
+      </div>
+      <div class="sheet-wrap">
+        <table id="sheet-table" class="sheet">
+          <thead>
+            <tr>
+              <th class="col-img"></th>
+              <th data-sort="inv_name">Inventory name <span class="sort-indicator"></span></th>
+              <th data-sort="set">Set <span class="sort-indicator"></span></th>
+              <th data-sort="number">#</th>
+              <th data-sort="variance">Variance</th>
+              <th data-sort="qty">Qty</th>
+              <th data-sort="price">Market $</th>
+              <th data-sort="matched_name">Matched product</th>
+              <th data-sort="matched_cond">Cond.</th>
+              <th data-sort="attribute">Attribute</th>
+            </tr>
+          </thead>
+          <tbody id="sheet-body"></tbody>
+        </table>
+        <p id="sheet-empty" class="empty-state hidden">No matched rows.</p>
+      </div>
+    </section>
+
+    <!-- Export -->
+    <section id="next-steps" class="card hidden">
+      <h2>3. Write outputs</h2>
+      <p>Auto-matched rows + your review confirmations will be written to TCGP-ready CSVs.
+         Personal / PSA / bad / skip rows are excluded from the TCGP output.</p>
+      <button type="button" id="export-btn">Write outputs</button>
+      <pre id="export-result" class="output"></pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
