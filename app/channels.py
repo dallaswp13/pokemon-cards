@@ -14,9 +14,10 @@ identical to the TCGplayer pipeline. Pure logic — no network, no keys.
 from __future__ import annotations
 
 import csv
+import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -67,6 +68,33 @@ def is_scarce(inv: InventoryRow) -> bool:
     return False
 
 
+_TEXTURED_RARITY = re.compile(
+    r"(illustration|special|secret|hyper|rainbow|gold|amazing|radiant)", re.IGNORECASE)
+_TEXTURED_NAME = re.compile(
+    r"(alternate art|alt art|full art|gold star|\(secret\))", re.IGNORECASE)
+
+
+def card_class(inv: InventoryRow) -> str:
+    """vintage | modern_textured | modern_smooth — drives grading multiples + timing."""
+    if _VINTAGE_SET.match(inv.set_name):
+        return "vintage"
+    if _TEXTURED_RARITY.search(_rarity(inv)) or _TEXTURED_NAME.search(inv.product_name):
+        return "modern_textured"
+    return "modern_smooth"
+
+
+def _value_tier(price: float) -> str:
+    return "HIGH" if price >= 100 else "MID" if price >= 10 else "LOW" if price >= 3 else "BULK"
+
+
+def _sell_now(price: float, cls: str) -> float:
+    """Sell-now priority (0–1): modern decays (sell now), value weights it up.
+    v1 proxy — a fuller score folds in live decline momentum from reprice snapshots."""
+    modern = 0.0 if cls == "vintage" else 1.0
+    val = min(1.0, math.log10(max(price, 1)) / 3)     # $1→0 … $1000→1
+    return round(0.55 * modern + 0.45 * val, 3)
+
+
 # ── Routing ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -77,6 +105,12 @@ class Route:
     ebay_net: float
     tcg_net: float
     flags: list[str]
+    rec_net: float = 0.0          # per-unit net via the recommended channel
+    net_pct: float = 0.0          # rec_net / market price — the objective function
+    value_tier: str = ""
+    card_class: str = ""
+    sell_now: float = 0.0
+    grade: object = None          # GradeDecision
 
     @property
     def unit_price(self) -> float:
@@ -85,6 +119,10 @@ class Route:
     @property
     def total_value(self) -> float:
         return self.inv.market_price * self.inv.quantity
+
+    @property
+    def total_net(self) -> float:
+        return self.rec_net * self.inv.quantity
 
 
 def route_row(inv: InventoryRow) -> Route:
@@ -99,27 +137,28 @@ def route_row(inv: InventoryRow) -> Route:
     if tcgp_tracking:
         flags.append("tcgp-tracking-$50+")   # TCGplayer needs tracking → avoid
 
-    # Sub-$5 → bulk lots (Workflow D handles these).
-    if price < Router.BULK_CEILING_USD:
-        return Route(inv, "Bulk lot", "under $5 — lot/buylist (Workflow D)",
-                     e.net, t.net, flags)
-
     scarce = is_scarce(inv)
-    if scarce and price >= Router.EBAY_SCARCE_MIN_USD:
-        return Route(inv, "eBay (auction)",
-                     "scarce/chase — auction realizes above market", e.net, t.net,
-                     flags + ["scarce"])
+    if price < Router.BULK_CEILING_USD:
+        channel, reason = "Bulk lot", "under $5 — lot/buylist (Workflow D)"
+    elif scarce and price >= Router.EBAY_SCARCE_MIN_USD:
+        channel, reason, flags = "eBay (auction)", "scarce/chase — auction realizes above market", flags + ["scarce"]
+    elif tcgp_tracking:
+        channel, reason = "eBay (fixed)", "$50+ — avoid TCGplayer tracking requirement"
+    elif e.net > t.net:
+        channel, reason = "eBay (fixed)", "net-best fixed price"
+    else:
+        channel, reason = "TCGplayer", "net-best fixed price (or tie)"
 
-    # $50+ → keep off TCGplayer (tracking requirement) → eBay fixed price.
-    if tcgp_tracking:
-        return Route(inv, "eBay (fixed)", "$50+ — avoid TCGplayer tracking requirement",
-                     e.net, t.net, flags)
-
-    # Otherwise: net-best fixed price. Tie → TCGplayer (less friction, existing
-    # pipeline, no authentication delay).
-    if e.net > t.net:
-        return Route(inv, "eBay (fixed)", "net-best fixed price", e.net, t.net, flags)
-    return Route(inv, "TCGplayer", "net-best fixed price (or tie)", e.net, t.net, flags)
+    r = Route(inv, channel, reason, e.net, t.net, flags)
+    r.rec_net = (fees.bulk_unit_cash(price) if channel == "Bulk lot"
+                 else e.net if channel.startswith("eBay") else t.net)
+    r.net_pct = (r.rec_net / price) if price else 0.0
+    r.value_tier = _value_tier(price)
+    r.card_class = card_class(inv)
+    r.sell_now = _sell_now(price, r.card_class)
+    import grading   # lazy import avoids a channels↔grading cycle
+    r.grade = grading.grade_decision(price, r.card_class)
+    return r
 
 
 # ── Run + report ─────────────────────────────────────────────────────────────

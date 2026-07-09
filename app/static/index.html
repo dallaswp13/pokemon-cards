@@ -166,10 +166,20 @@
           <p id="sell-meta" class="meta">Loading…</p>
         </div>
         <div class="review-nav">
+          <label class="filter-label">Sort
+            <select id="sell-sort">
+              <option value="value">Value</option>
+              <option value="netpct">Net %</option>
+              <option value="sellnow">Sell-now priority</option>
+              <option value="gradegap">Grade upside</option>
+            </select>
+          </label>
           <input type="search" id="sell-search" placeholder="Search name or set…" />
           <button type="button" id="sell-back-btn" class="secondary">Done</button>
         </div>
       </div>
+
+      <div id="sell-summary" class="sell-summary"></div>
 
       <div id="sell-filters" class="sell-filters">
         <div class="filter-row">
@@ -193,6 +203,7 @@
           <button class="chip" data-filter="keep" data-value="">All</button>
           <button class="chip" data-filter="keep" data-value="keep">★ Keepers</button>
           <button class="chip" data-filter="keep" data-value="sell">For sale</button>
+          <button class="chip" data-filter="grade" data-value="grade">◆ Grade-first</button>
           <span class="filter-label" style="margin-left:12px">Tag:</span>
           <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
         </div>

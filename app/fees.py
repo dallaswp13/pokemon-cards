@@ -58,9 +58,11 @@ BULK_LOT_KEEP = 0.65       # $1–5 cards in themed lots realize ~65% of market
 
 
 def bulk_unit_cash(unit_price: float) -> float:
-    """Realistic cash for one sub-$5 card via the best bulk exit for its tier."""
+    """Realistic cash for one sub-$5 card via the best bulk exit for its tier.
+    Capped at the card's own price so a near-worthless common can't show >100%
+    recovery (the flat dump rate would otherwise exceed a sub-$0.025 card)."""
     if unit_price < 1.0:
-        return BULK_DUMP_RATE
+        return min(unit_price, BULK_DUMP_RATE)
     return unit_price * BULK_LOT_KEEP
 
 

@@ -395,13 +395,53 @@ def api_sell():
             "channel_reason": route.reason,
             "flags":          route.flags,
             "band":           _price_band(inv.market_price),
+            "value_tier":     route.value_tier,
+            "card_class":     route.card_class,
+            "net_unit":       round(route.rec_net, 2),
+            "net_total":      round(route.total_net, 2),
+            "net_pct":        round(route.net_pct, 3),
+            "sell_now":       route.sell_now,
+            "grade_flag":     bool(route.grade and route.grade.grade),
+            "grade_gap":      round(route.grade.ev_gap, 2) if route.grade else 0,
+            "grade_reason":   route.grade.reason if route.grade else "",
             "keep":           attr == "personal",
             "attribute":      attr,
             "tags":           d.get("tags", []),
         })
-    # Sort most valuable first — that's the working order.
-    rows.sort(key=lambda x: -x["price"])
-    return jsonify({"rows": rows, "count": len(rows)})
+    rows.sort(key=lambda x: -x["price"])   # most valuable first (default working order)
+    return jsonify({"rows": rows, "count": len(rows), "summary": _sell_summary(rows)})
+
+
+def _sell_summary(rows: list[dict]) -> dict:
+    """Portfolio recovery rollup: net % back, by tier, incl/excl bulk tail, grade queue."""
+    sellable = [r for r in rows if not r["keep"]]
+    def agg(rs):
+        mkt = sum(r["price"] * r["qty"] for r in rs)
+        net = sum(r["net_total"] for r in rs)
+        return round(mkt, 2), round(net, 2), (round(net / mkt, 3) if mkt else 0)
+
+    mkt, net, pct = agg(sellable)
+    tiers = {}
+    for tier in ("HIGH", "MID", "LOW", "BULK"):
+        tm, tn, tp = agg([r for r in sellable if r["value_tier"] == tier])
+        tiers[tier] = {"market": tm, "net": tn, "pct": tp}
+    non_bulk = [r for r in sellable if r["channel"] != "Bulk lot"]
+    nbm, nbn, nbp = agg(non_bulk)
+
+    grade_cands = [r for r in sellable if r["grade_flag"]]
+    keepers = [r for r in rows if r["keep"]]
+    consign = [r for r in sellable if r["price"] >= 2000]   # config.Grading.CONSIGN_FLOOR_GRADED
+    return {
+        "market": mkt, "net": net, "pct": pct,
+        "pct_excl_bulk": nbp, "net_excl_bulk": nbn, "market_excl_bulk": nbm,
+        "by_tier": tiers,
+        "grade_candidates": len(grade_cands),
+        "grade_extra": round(sum(r["grade_gap"] for r in grade_cands), 2),
+        "consign_eligible": len(consign),
+        "keepers": len(keepers),
+        "keepers_value": round(sum(r["price"] * r["qty"] for r in keepers), 2),
+        "count_sellable": len(sellable),
+    }
 
 
 @app.route("/api/tag", methods=["POST"])

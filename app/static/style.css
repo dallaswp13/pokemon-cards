@@ -460,3 +460,19 @@ input[type="search"] {
 .tile-tags .tag-x { background:none; border:none; color:var(--accent-hover); cursor:pointer; font-size:12px; padding:0 2px; }
 .tile-tags .add-tag { font-size:10px; background:none; border:1px dashed var(--border-strong); color:var(--text-dim); border-radius:4px; padding:1px 6px; cursor:pointer; }
 .tile-tags .add-tag:hover { border-color:var(--accent); color:var(--text); }
+
+/* ===== Sell Cockpit — recovery summary + net% + grade ===== */
+.sell-summary { background:linear-gradient(135deg, rgba(91,141,239,0.10), rgba(124,58,237,0.08)); border:1px solid var(--border-strong); border-radius:10px; padding:14px 18px; margin-bottom:16px; display:flex; flex-direction:column; gap:8px; }
+.sell-summary .sum-head { display:flex; align-items:baseline; gap:12px; }
+.sell-summary .sum-pct { font-size:30px; font-weight:700; color:var(--success); }
+.sell-summary .dim { color:var(--text-dim); font-weight:400; font-size:13px; }
+.sell-summary .sum-tiers { display:flex; flex-wrap:wrap; gap:14px; }
+.sell-summary .sum-tier { font-size:13px; color:var(--text); }
+.sell-summary .sum-tier b { color:var(--accent-hover); }
+.sell-summary .sum-notes { display:flex; flex-wrap:wrap; gap:14px; font-size:12px; }
+.sell-summary .sum-note { color:var(--text-dim); }
+.sell-summary .sum-note.grade { color:#c084fc; font-weight:600; }
+#sell-sort { background:var(--bg); border:1px solid var(--border-strong); color:var(--text); border-radius:6px; padding:3px 6px; font-size:13px; margin-left:4px; }
+.tile-net { font-size:12px; color:var(--text-dim); }
+.tile-net b { color:var(--success); }
+.tile-flags .flag.grade { color:#c084fc; border-color:#7c3aed; font-weight:600; }
