@@ -81,8 +81,13 @@ def cmd_reprice(args) -> None:
 
 def cmd_radar(args) -> None:
     from radar import run
-    s = run.run_radar(source=args.source, mode=args.mode, fixture=args.fixture,
-                      notify_deals=not args.no_notify)
+    try:
+        s = run.run_radar(source=args.source, mode=args.mode, fixture=args.fixture,
+                          export_path=args.export, top_n=args.top,
+                          notify_deals=not args.no_notify)
+    except RuntimeError as e:
+        print(f"radar: {e}")
+        return
     print(f"\n=== Deal radar ({s['source']}, mode={s['mode']}) — "
           f"{s['fetched']} fetched, {s['flagged']} flagged ===")
     for d in s["deals"]:
@@ -122,9 +127,12 @@ def main() -> None:
         if name == "radar":
             sp.add_argument("--mode", choices=["flip", "collect", "both"],
                             default="both", help="deal-detection mode")
-            sp.add_argument("--source", choices=["apify", "html", "fixture"],
-                            default="fixture", help="auction data source")
+            sp.add_argument("--source", choices=["ebay_watch", "apify", "html", "fixture"],
+                            default="fixture",
+                            help="auction data source (ebay_watch = free Browse API watchlist)")
             sp.add_argument("--fixture", default="", help="path to a listings JSON fixture")
+            sp.add_argument("--top", type=int, default=30,
+                            help="ebay_watch: how many top cards to watch")
             sp.add_argument("--no-notify", action="store_true")
 
     args = p.parse_args()

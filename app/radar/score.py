@@ -64,8 +64,9 @@ class Score:
 
 
 def score_listing(listing: dict, reference: float | None, mode: str = "flip",
-                  ref_confidence: str = "medium") -> Score:
+                  ref_confidence: str = "medium", window_min: float | None = None) -> Score:
     title = listing.get("title", "") or ""
+    win = window_min if window_min is not None else Radar.SNIPE_WINDOW_MIN
     fails: list[str] = []
     reasons: list[str] = []
 
@@ -79,8 +80,8 @@ def score_listing(listing: dict, reference: float | None, mode: str = "flip",
     if BAD_KEYWORDS.search(title):
         fails.append("suspect keyword in title (lot/proxy/damaged/…)")
     ml = listing.get("minutes_left")
-    if ml is not None and ml > Radar.SNIPE_WINDOW_MIN:
-        fails.append(f"ends in {ml:.0f}m (> {Radar.SNIPE_WINDOW_MIN}m window)")
+    if ml is not None and ml > win:
+        fails.append(f"ends in {ml:.0f}m (> {win:.0f}m window)")
     fb = listing.get("seller_feedback_pct")
     if fb is not None and fb < Radar.MIN_SELLER_FEEDBACK_PCT:
         fails.append(f"seller feedback {fb:.0f}% < {Radar.MIN_SELLER_FEEDBACK_PCT:.0f}%")
@@ -155,12 +156,12 @@ def _is_priority(title: str) -> bool:
 
 
 def best_score(listing: dict, reference: float | None, mode: str,
-               ref_confidence: str = "medium") -> Score:
+               ref_confidence: str = "medium", window_min: float | None = None) -> Score:
     """For mode='both', return whichever mode flags (flip preferred if both do)."""
     if mode in ("flip", "collect"):
-        return score_listing(listing, reference, mode, ref_confidence)
-    flip = score_listing(listing, reference, "flip", ref_confidence)
-    collect = score_listing(listing, reference, "collect", ref_confidence)
+        return score_listing(listing, reference, mode, ref_confidence, window_min)
+    flip = score_listing(listing, reference, "flip", ref_confidence, window_min)
+    collect = score_listing(listing, reference, "collect", ref_confidence, window_min)
     if flip.flag:
         return flip
     if collect.flag:

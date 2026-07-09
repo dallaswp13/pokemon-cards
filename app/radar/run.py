@@ -21,9 +21,20 @@ RADAR_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run_radar(source: str = "fixture", mode: str = "both", fixture: str = "",
+              export_path: str = None, top_n: int = 30,
               notify_deals: bool = True, date_str: str = None) -> dict:
     date_str = date_str or date.today().strftime("%Y%m%d")
-    listings = sources.get_source(source, fixture).fetch()
+
+    # The watchlist watches specific cards across their whole auction window, so
+    # don't gate on the close time (you set a snipe days ahead). The firehose
+    # keeps the tight ending-soon window.
+    if source == "ebay_watch":
+        from radar.watch import WatchSource
+        listings = WatchSource(export_path, top_n=top_n).fetch()
+        window = 10 ** 9
+    else:
+        listings = sources.get_source(source, fixture).fetch()
+        window = None
 
     # Prefilter on cheap title/auction gates BEFORE any network comp lookup —
     # the feed leaks non-Pokémon/junk, and a comp call per listing is the slow
@@ -31,13 +42,13 @@ def run_radar(source: str = "fixture", mode: str = "both", fixture: str = "",
     scored = []
     probe_mode = "flip" if mode == "both" else mode
     for lst in listings:
-        dry = score.score_listing(lst, None, probe_mode)
+        dry = score.score_listing(lst, None, probe_mode, window_min=window)
         other_fails = [f for f in dry.gate_failures if "no reference price" not in f]
         if other_fails:
             scored.append((lst, dry))               # rejected on gates; skip the network
             continue
         M, conf = comps.get_reference(lst)
-        scored.append((lst, score.best_score(lst, M, mode, conf)))
+        scored.append((lst, score.best_score(lst, M, mode, conf, window_min=window)))
 
     flagged = [(l, s) for l, s in scored if s.flag]
     # Sort best deals first (lowest all-in / reference).

@@ -31,7 +31,15 @@ Default input is `inputs/export.csv` (your Collectr export); override with
 | Deal / mover alerts | `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID` or `HERMES_NOTIFY_URL` | free | push to phone; else prints to stdout |
 | Per-card watchlist (optional) | `EBAY_CLIENT_ID/SECRET` | free (needs eBay approval) | Browse API for your ~50 named cards |
 
-The radar's live feed: `python3 app/sell.py radar --source apify --mode both`.
+The radar has two feeds:
+- **`--source ebay_watch`** (recommended, FREE): watches *your* high-value cards
+  via the official eBay Browse API — no scraping, no proxy. Needs a free eBay
+  developer app (`EBAY_CLIENT_ID`/`SECRET`). Per-card watch, not a firehose.
+  `python3 app/sell.py radar --source ebay_watch --mode both`
+- **`--source apify`** (firehose): every Pokémon auction ending soon. Reliable
+  only on a paid Apify tier — the free tier gets soft-blocked by eBay (scrapes
+  0). `python3 app/sell.py radar --source apify --mode both`
+
 Sniping itself stays manual/Gixen — the tool flags and gives you a **max bid**;
 it never bids for you.
 
