@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     attribute     TEXT,
     notes         TEXT,
     tags          TEXT,
+    condition     TEXT,
     status        TEXT,
     listed_at     TEXT,
     sold_at       TEXT,
@@ -53,9 +54,10 @@ CREATE TABLE IF NOT EXISTS decisions (
 
 # Ledger status values (NULL = unlisted/default).
 STATUS_KINDS = {"listed", "sold"}
+CONDITION_KINDS = {"NM", "LP", "MP", "HP", "DMG"}
 # Extra columns added to older DBs by init_db.
-_ADDED_COLUMNS = {"tags": "TEXT", "status": "TEXT", "listed_at": "TEXT",
-                  "sold_at": "TEXT", "sale_price": "REAL"}
+_ADDED_COLUMNS = {"tags": "TEXT", "condition": "TEXT", "status": "TEXT",
+                  "listed_at": "TEXT", "sold_at": "TEXT", "sale_price": "REAL"}
 
 
 def _ensure_dir() -> None:
@@ -155,11 +157,11 @@ def update_decision(
     with _open() as conn:
         conn.execute(DDL)
         cur = conn.execute(
-            "SELECT link_kind, tcgplayer_id, attribute, notes, tags, status, sale_price "
+            "SELECT link_kind, tcgplayer_id, attribute, notes, tags, condition, status, sale_price "
             "FROM decisions WHERE natural_key=?",
             (nkey,),
         ).fetchone()
-        cur_link, cur_tid, cur_attr, cur_notes, cur_tags, cur_status, cur_price = cur if cur else (None,)*7
+        cur_link, cur_tid, cur_attr, cur_notes, cur_tags, cur_cond, cur_status, cur_price = cur if cur else (None,)*8
 
         new_link  = cur_link  if link_kind    == "__unset__" else link_kind
         new_tid   = cur_tid   if tcgplayer_id == "__unset__" else tcgplayer_id
@@ -167,9 +169,9 @@ def update_decision(
         new_notes = cur_notes if notes        == "__unset__" else notes
         new_tags  = cur_tags  if tags         == "__unset__" else (_norm_tags(tags) or None)
 
-        # Keep the row if it still carries ledger state, even with no link/attr/tag.
+        # Keep the row if it still carries condition/ledger state, even with no link/attr/tag.
         if (new_link is None and new_attr is None and not new_notes and not new_tags
-                and not cur_status and cur_price is None):
+                and not cur_cond and not cur_status and cur_price is None):
             conn.execute("DELETE FROM decisions WHERE natural_key=?", (nkey,))
         else:
             conn.execute("""
@@ -189,6 +191,25 @@ def update_decision(
 def clear_decision(nkey: str) -> None:
     with _open() as conn:
         conn.execute("DELETE FROM decisions WHERE natural_key=?", (nkey,))
+        conn.commit()
+
+
+def update_condition(nkey: str, condition) -> None:
+    """Set a card's condition (NM/LP/MP/HP/DMG), or None to reset to default (NM)."""
+    if condition not in (None, *CONDITION_KINDS):
+        raise ValueError(f"unknown condition: {condition}")
+    with _open() as conn:
+        conn.execute(DDL)
+        conn.execute("""
+            INSERT INTO decisions (natural_key, condition, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(natural_key) DO UPDATE SET
+                condition = excluded.condition, updated_at = excluded.updated_at
+        """, (nkey, condition))
+        # Clean up a row that now holds nothing meaningful.
+        conn.execute("""DELETE FROM decisions WHERE natural_key=? AND link_kind IS NULL
+            AND attribute IS NULL AND (notes IS NULL OR notes='') AND (tags IS NULL OR tags='')
+            AND condition IS NULL AND status IS NULL AND sale_price IS NULL""", (nkey,))
         conn.commit()
 
 
@@ -230,7 +251,7 @@ def get_decision(nkey: str) -> Optional[dict]:
     with _open() as conn:
         conn.execute(DDL)
         row = conn.execute(
-            "SELECT link_kind, tcgplayer_id, attribute, notes, tags, status, "
+            "SELECT link_kind, tcgplayer_id, attribute, notes, tags, condition, status, "
             "listed_at, sold_at, sale_price, updated_at FROM decisions WHERE natural_key=?",
             (nkey,),
         ).fetchone()
@@ -242,11 +263,12 @@ def get_decision(nkey: str) -> Optional[dict]:
         "attribute":    row[2],
         "notes":        row[3],
         "tags":         (row[4].split(",") if row[4] else []),
-        "status":       row[5],
-        "listed_at":    row[6],
-        "sold_at":      row[7],
-        "sale_price":   row[8],
-        "updated_at":   row[9],
+        "condition":    row[5],
+        "status":       row[6],
+        "listed_at":    row[7],
+        "sold_at":      row[8],
+        "sale_price":   row[9],
+        "updated_at":   row[10],
     }
 
 
@@ -255,7 +277,7 @@ def all_decisions() -> dict[str, dict]:
         conn.execute(DDL)
         cur = conn.execute(
             "SELECT natural_key, link_kind, tcgplayer_id, attribute, notes, tags, "
-            "status, listed_at, sold_at, sale_price, updated_at FROM decisions"
+            "condition, status, listed_at, sold_at, sale_price, updated_at FROM decisions"
         )
         return {
             row[0]: {
@@ -264,11 +286,12 @@ def all_decisions() -> dict[str, dict]:
                 "attribute":    row[3],
                 "notes":        row[4],
                 "tags":         (row[5].split(",") if row[5] else []),
-                "status":       row[6],
-                "listed_at":    row[7],
-                "sold_at":      row[8],
-                "sale_price":   row[9],
-                "updated_at":   row[10],
+                "condition":    row[6],
+                "status":       row[7],
+                "listed_at":    row[8],
+                "sold_at":      row[9],
+                "sale_price":   row[10],
+                "updated_at":   row[11],
             }
             for row in cur.fetchall()
         }

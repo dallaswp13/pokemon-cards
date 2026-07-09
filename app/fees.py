@@ -124,3 +124,16 @@ def best_online(price: float, ad_rate: float = 0.0) -> NetQuote:
     """Higher-net of eBay vs TCGplayer for a fixed-price single (fees only)."""
     e, t = ebay_net(price, ad_rate), tcgplayer_net(price)
     return e if e.net > t.net else t
+
+
+# ── Local card-shop trade-in (instant, no fees/shipping) ────────────────────
+def shop_trade(price: float) -> float:
+    """Store-credit value: 80% >$10, else 70% (Dallas's shop)."""
+    from config import Shop
+    return price * (Shop.TRADE_OVER if price > Shop.THRESHOLD else Shop.TRADE_UNDER)
+
+
+def shop_cash(price: float) -> float:
+    """Cash value: 70% >$10, else 60%."""
+    from config import Shop
+    return price * (Shop.CASH_OVER if price > Shop.THRESHOLD else Shop.CASH_UNDER)

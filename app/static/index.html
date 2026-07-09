@@ -184,6 +184,8 @@
             </select>
           </label>
           <input type="search" id="sell-search" placeholder="Search name or set…" />
+          <button type="button" id="holds-btn" class="secondary">💎 Holds</button>
+          <button type="button" id="manifest-btn" class="secondary">🏪 Drop-off</button>
           <button type="button" id="sell-matcher-btn" class="secondary">🔧 Matcher</button>
         </div>
       </div>
@@ -234,6 +236,20 @@
         <div class="modal-backdrop" id="modal-backdrop"></div>
         <div class="modal-panel" id="modal-panel"></div>
       </div>
+    </section>
+
+    <!-- Holds: graded + sealed (long-term keepers) -->
+    <section id="holds-section" class="card hidden">
+      <div class="review-header">
+        <div>
+          <h2>💎 Holds — graded &amp; sealed</h2>
+          <p id="holds-meta" class="meta">Long-term keepers — never routed for sale.</p>
+        </div>
+        <div class="review-nav">
+          <button type="button" id="holds-back-btn" class="secondary">← Back to cockpit</button>
+        </div>
+      </div>
+      <div id="holds-grid" class="sell-grid"></div>
     </section>
   </main>
 

@@ -149,6 +149,22 @@ class Grading:
     CONSIGN_FLOOR_GRADED = 2000.0
 
 
+class Shop:
+    """Local card-shop trade-in (the shop by Dallas's work). Singles >$10 →
+    80% trade / 70% cash; ≤$10 → 70% trade / 60% cash. Dallas favors TRADE
+    credit — his goal is to consolidate many small cards into fewer big ones."""
+    THRESHOLD = 10.0
+    TRADE_OVER = 0.80
+    CASH_OVER = 0.70
+    TRADE_UNDER = 0.70
+    CASH_UNDER = 0.60
+
+
+# Inventory condition → fraction of NM market price (sell-side, Dallas's rule).
+CONDITION_FACTORS = {"NM": 1.0, "LP": 0.90, "MP": 0.75, "HP": 0.60, "DMG": 0.50}
+CONDITIONS = list(CONDITION_FACTORS)
+
+
 class Router:
     BULK_CEILING_USD = 5.0        # Pokemon singles under this → bulk lots (D)
     EBAY_SCARCE_MIN_USD = 25.0    # only send scarce cards to eBay auction above this

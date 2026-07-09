@@ -22,7 +22,7 @@ from datetime import date
 from pathlib import Path
 
 import fees
-from config import Router
+from config import Router, Grading
 from matcher import load_export, InventoryRow
 
 # ── Scarcity heuristics ─────────────────────────────────────────────────────
@@ -106,11 +106,15 @@ class Route:
     tcg_net: float
     flags: list[str]
     rec_net: float = 0.0          # per-unit net via the recommended channel
-    net_pct: float = 0.0          # rec_net / market price — the objective function
+    net_pct: float = 0.0          # rec_net / (effective) price — the objective function
     value_tier: str = ""
     card_class: str = ""
     sell_now: float = 0.0
     grade: object = None          # GradeDecision
+    psa10: float = 0.0            # estimated PSA-10 price (price × class multiple)
+    psa10_pct: float = 0.0        # PSA-10 as a multiple of raw (e.g. 2.5 = 250%)
+    shop_trade: float = 0.0       # local shop store-credit value
+    shop_cash: float = 0.0        # local shop cash value
 
     @property
     def unit_price(self) -> float:
@@ -125,8 +129,10 @@ class Route:
         return self.rec_net * self.inv.quantity
 
 
-def route_row(inv: InventoryRow) -> Route:
-    price = inv.market_price
+def route_row(inv: InventoryRow, price: float = None) -> Route:
+    # `price` lets the caller pass a condition-adjusted effective price; defaults
+    # to the export's NM market price.
+    price = inv.market_price if price is None else price
     e = fees.ebay_net(price)
     t = fees.tcgplayer_net(price)
     flags: list[str] = []
@@ -156,6 +162,11 @@ def route_row(inv: InventoryRow) -> Route:
     r.value_tier = _value_tier(price)
     r.card_class = card_class(inv)
     r.sell_now = _sell_now(price, r.card_class)
+    m10 = Grading.CLASS_PARAMS.get(r.card_class, {}).get("m10", 0)
+    r.psa10 = round(price * m10, 2)
+    r.psa10_pct = m10
+    r.shop_trade = round(fees.shop_trade(price), 2)
+    r.shop_cash = round(fees.shop_cash(price), 2)
     import grading   # lazy import avoids a channels↔grading cycle
     r.grade = grading.grade_decision(price, r.card_class)
     return r

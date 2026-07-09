@@ -358,6 +358,7 @@ def _price_band(price: float) -> str:
 def api_sell():
     """Enriched rows for the visual Sell Cockpit: route + price band + image + tags."""
     import channels
+    from config import CONDITION_FACTORS
     h = CURRENT_SESSION["hash"]
     if not h or h not in SESSIONS:
         return jsonify({"error": "no active session — run a match first"}), 400
@@ -375,7 +376,9 @@ def api_sell():
         elif r.matched_row is not None:
             tid = r.matched_row.tcgplayer_id
 
-        route = channels.route_row(inv)
+        cond = d.get("condition") or "NM"
+        effective = inv.market_price * CONDITION_FACTORS.get(cond, 1.0)
+        route = channels.route_row(inv, price=effective)
         attr = d.get("attribute")
         nkey = _natural_key_for(r)
         rows.append({
@@ -386,15 +389,21 @@ def api_sell():
             "number":         inv.card_number,
             "variance":       inv.variance,
             "qty":            inv.quantity,
-            "price":          round(inv.market_price, 2),
+            "price":          round(effective, 2),
+            "market_price":   round(inv.market_price, 2),
+            "condition":      cond,
             "category":       inv.category,
             "tcgplayer_id":   tid,
             "channel":        route.channel,
             "channel_reason": route.reason,
             "flags":          route.flags,
-            "band":           _price_band(inv.market_price),
+            "band":           _price_band(effective),
             "value_tier":     route.value_tier,
             "card_class":     route.card_class,
+            "psa10":          route.psa10,
+            "psa10_pct":      route.psa10_pct,
+            "shop_trade":     route.shop_trade,
+            "shop_cash":      route.shop_cash,
             "net_unit":       round(route.rec_net, 2),
             "net_total":      round(route.total_net, 2),
             "net_pct":        round(route.net_pct, 3),
@@ -556,6 +565,104 @@ def api_delete_photo(nkey: str, side: str):
     if p.exists():
         p.unlink()
     return jsonify({"ok": True})
+
+
+@app.route("/api/condition", methods=["POST"])
+def api_condition():
+    """Set a card's condition (NM/LP/MP/HP/DMG). Body: { row_idx, condition }"""
+    body = request.get_json(silent=True) or {}
+    nkey, err = _row_nkey(body.get("row_idx"))
+    if err:
+        return err
+    try:
+        session_db.update_condition(nkey, body.get("condition") or None)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/holds")
+def api_holds():
+    """Graded + sealed items — long-term holds, never routed for sale."""
+    import images as im
+    h = CURRENT_SESSION["hash"]
+    if not h or h not in SESSIONS:
+        return jsonify({"error": "no active session"}), 400
+    items = []
+    for row in SESSIONS[h]["set_aside"]:
+        reason = row.get("_reason", "")
+        if reason not in ("graded", "sealed"):
+            continue
+        name = (row.get("Product Name") or "").strip()
+        setn = (row.get("Set") or "").strip()
+        num = (row.get("Card Number") or "").strip()
+        try:
+            qty = int(row.get("Quantity", 1) or 1)
+        except ValueError:
+            qty = 1
+        img = None
+        if reason == "graded" and row.get("Category") == "Pokemon":
+            img = im.resolve_image_url("hold-" + name + num, "Pokemon", name, setn, num)
+        items.append({
+            "name": name, "set": setn, "number": num, "grade": row.get("Grade", ""),
+            "reason": reason, "qty": qty,
+            "value": round(float(row.get("_market_value", 0) or 0), 2), "image_url": img,
+        })
+    items.sort(key=lambda x: -x["value"])
+    return jsonify({
+        "items": items, "count": len(items),
+        "total": round(sum(i["value"] for i in items), 2),
+        "graded": sum(1 for i in items if i["reason"] == "graded"),
+        "sealed": sum(1 for i in items if i["reason"] == "sealed"),
+    })
+
+
+@app.route("/api/manifest", methods=["POST"])
+def api_manifest():
+    """
+    Write a card-shop drop-off manifest (CSV) of cards tagged for the shop — your
+    valuations + the shop's trade/cash values, so you drop off with a printout and
+    they price against it. Body: { tag?: 'shop' }
+    """
+    import fees
+    import csv as _csv
+    from config import CONDITION_FACTORS
+    from datetime import date
+    h = CURRENT_SESSION["hash"]
+    if not h or h not in SESSIONS:
+        return jsonify({"error": "no active session"}), 400
+    body = request.get_json(silent=True) or {}
+    tag = (body.get("tag") or "shop").lower()
+    s = SESSIONS[h]
+    decisions = _decisions_for_session(s)
+
+    picks = []
+    for idx, r in enumerate(s["results"]):
+        d = decisions.get(idx) or {}
+        if tag not in (d.get("tags") or []) or d.get("attribute") == "personal":
+            continue
+        inv = r.inventory_row
+        cond = d.get("condition") or "NM"
+        eff = inv.market_price * CONDITION_FACTORS.get(cond, 1.0)
+        picks.append((inv, cond, eff))
+    picks.sort(key=lambda x: -x[2])
+
+    path = OUTPUTS / f"shop_manifest_{date.today().strftime('%Y%m%d')}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tot_v = tot_t = tot_c = 0.0
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = _csv.writer(f, lineterminator="\r\n")
+        w.writerow(["Card", "Set", "Number", "Condition", "Your Value",
+                    "Trade (store credit)", "Cash"])
+        for inv, cond, eff in picks:
+            tr, ca = round(fees.shop_trade(eff), 2), round(fees.shop_cash(eff), 2)
+            tot_v += eff; tot_t += tr; tot_c += ca
+            w.writerow([inv.product_name, inv.set_name, inv.card_number, cond,
+                        f"{eff:.2f}", f"{tr:.2f}", f"{ca:.2f}"])
+        w.writerow(["TOTAL", "", "", "", f"{tot_v:.2f}", f"{tot_t:.2f}", f"{tot_c:.2f}"])
+    return jsonify({"path": str(path), "count": len(picks),
+                    "total_value": round(tot_v, 2), "total_trade": round(tot_t, 2),
+                    "total_cash": round(tot_c, 2)})
 
 
 @app.route("/api/decide", methods=["POST"])

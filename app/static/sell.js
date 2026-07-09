@@ -165,10 +165,10 @@
         <div class="tile-name" title="${esc(row.name)}">${esc(row.name)}</div>
         <div class="tile-sub">${esc(row.set)} · #${esc(row.number) || "—"}</div>
         <div class="tile-row">
-          <span class="price">$${row.price.toFixed(2)}${row.qty > 1 ? ` ×${row.qty}` : ""}</span>
+          <span class="price">$${row.price.toFixed(2)}${row.qty > 1 ? ` ×${row.qty}` : ""}${row.condition && row.condition !== "NM" ? ` <span class="cond-chip">${row.condition}</span>` : ""}</span>
           <span class="badge ${CHANNEL_CLASS[row.channel] || ""}" title="${esc(row.channel_reason)}">${esc(row.channel)}</span>
         </div>
-        <div class="tile-net">net $${row.net_unit.toFixed(0)} · <b>${Math.round(row.net_pct * 100)}%</b> back</div>
+        <div class="tile-net">net $${row.net_unit.toFixed(0)} · <b>${Math.round(row.net_pct * 100)}%</b>${row.psa10 ? ` · PSA10 ~$${Math.round(row.psa10)}` : ""}</div>
         <div class="tile-flags">${gradeBadge}${flags}</div>
         <div class="tile-tags">${tags}<button class="add-tag" data-act="addtag">+ tag</button></div>
       </div>`;
@@ -274,6 +274,18 @@
             <span class="m-net">net $${row.net_unit.toFixed(0)} · <b>${Math.round(row.net_pct * 100)}%</b></span>
           </div>
           ${grade}
+          <div class="m-row m-extra">
+            <label class="filter-label">Condition
+              <select id="m-cond">${["NM", "LP", "MP", "HP", "DMG"].map((c) => `<option value="${c}" ${(row.condition || "NM") === c ? "selected" : ""}>${c}</option>`).join("")}</select>
+            </label>
+            ${row.condition && row.condition !== "NM" ? `<span class="dim">NM $${(row.market_price != null ? row.market_price : row.price).toFixed(2)}</span>` : ""}
+          </div>
+          <div class="m-extra-lines">
+            <div class="m-line">◆ PSA 10 (est): <b>$${Math.round(row.psa10).toLocaleString()}</b> · ${row.psa10_pct}× raw</div>
+            <div class="m-line">🏪 Local shop: trade <b>$${Math.round(row.shop_trade)}</b> / cash $${Math.round(row.shop_cash)}
+              <button class="m-btn sm ${(row.tags || []).includes("shop") ? "on" : ""}" data-mact="shop">${(row.tags || []).includes("shop") ? "✓ drop-off" : "+ drop-off"}</button>
+            </div>
+          </div>
           <div class="m-row">
             <button class="m-btn ${row.keep ? "on" : ""}" data-mact="keep">${row.keep ? "★ Keeper" : "☆ Keep"}</button>
             <button class="m-btn" data-mact="addtag">+ tag</button>
@@ -296,6 +308,12 @@
     panel.onclick = (ev) => onModalClick(ev, row);
     panel.querySelectorAll("input[type=file]").forEach((inp) =>
       inp.addEventListener("change", () => { if (inp.files[0]) uploadPhoto(row, inp.dataset.side, inp.files[0]); }));
+    const cs = document.querySelector("#m-cond");
+    if (cs) cs.addEventListener("change", async () => {
+      await fetch("/api/condition", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row_idx: row.row_idx, condition: cs.value }) });
+      await refreshReopen(row.natural_key);
+    });
     $("#card-modal").classList.remove("hidden");
   }
 
@@ -341,6 +359,10 @@
       await statusPatch(row, body); await refreshReopen(row.natural_key);
     } else if (act === "unlist") {
       await statusPatch(row, { status: null }); await refreshReopen(row.natural_key);
+    } else if (act === "shop") {
+      const has = (row.tags || []).includes("shop");
+      const tg = has ? (row.tags || []).filter((x) => x !== "shop") : [...(row.tags || []), "shop"];
+      await patch(row, { tags: tg }); await refreshReopen(row.natural_key);
     } else if (act === "delphoto") {
       const side = ev.target.dataset.side;
       try { await fetch(`/api/photo/${row.natural_key}/${side}`, { method: "DELETE" }); } catch (e) {}
@@ -349,7 +371,56 @@
     }
   }
 
+  // ── Holds (graded + sealed) ────────────────────────────────────────────
+  function closeHolds() {
+    $("#holds-section").classList.add("hidden");
+    $("#sell-section").classList.remove("hidden");
+  }
+
+  function holdTile(it) {
+    const el = document.createElement("div");
+    el.className = "sell-tile";
+    const img = it.image_url
+      ? `<img loading="lazy" src="${it.image_url}" onerror="this.classList.add('broken')">`
+      : `<div class="noimg">${it.reason}</div>`;
+    el.innerHTML = `
+      <div class="tile-img">${img}<div class="tile-badges"><span class="tb">${it.reason === "graded" ? "🏆" : "📦"}</span></div></div>
+      <div class="tile-body">
+        <div class="tile-name" title="${esc(it.name)}">${esc(it.name)}</div>
+        <div class="tile-sub">${esc(it.set)}${it.number ? " · #" + esc(it.number) : ""}${it.grade && it.grade !== "Ungraded" ? " · " + esc(it.grade) : ""}</div>
+        <div class="tile-row"><span class="price">$${it.value.toFixed(2)}</span><span class="badge ch-bulk">HOLD</span></div>
+      </div>`;
+    return el;
+  }
+
+  async function openHolds() {
+    allSections().forEach((s) => s.classList.add("hidden"));
+    $("#holds-section").classList.remove("hidden");
+    const g = $("#holds-grid");
+    g.className = "sell-grid";
+    g.innerHTML = "";
+    $("#holds-meta").textContent = "Loading…";
+    let d;
+    try { d = await (await fetch("/api/holds")).json(); } catch (e) { $("#holds-meta").textContent = "Error."; return; }
+    $("#holds-meta").textContent = `${d.count} holds · ${money(d.total)} · ${d.graded} graded · ${d.sealed} sealed — long-term keepers, never routed for sale.`;
+    const frag = document.createDocumentFragment();
+    (d.items || []).forEach((it) => frag.appendChild(holdTile(it)));
+    g.appendChild(frag);
+  }
+
+  async function doManifest() {
+    let d;
+    try {
+      d = await (await fetch("/api/manifest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tag: "shop" }) })).json();
+    } catch (e) { alert("Error generating manifest."); return; }
+    if (!d.count) { alert('No cards tagged for the shop yet.\nOpen a card → 🏪 "+ drop-off" to add it, then generate the manifest.'); return; }
+    alert(`🏪 Shop drop-off manifest — ${d.count} cards\n\nYour value: $${Math.round(d.total_value).toLocaleString()}\nTrade credit (80/70%): $${Math.round(d.total_trade).toLocaleString()}\nCash (70/60%): $${Math.round(d.total_cash).toLocaleString()}\n\nSaved CSV: ${d.path}`);
+  }
+
   wire();
+  const hb = $("#holds-btn"); if (hb) hb.addEventListener("click", openHolds);
+  const hbb = $("#holds-back-btn"); if (hbb) hbb.addEventListener("click", closeHolds);
+  const mb = $("#manifest-btn"); if (mb) mb.addEventListener("click", doManifest);
   // Cockpit is the primary view — open it straight away (auto-matches if needed).
   openSell();
 })();
