@@ -17,6 +17,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+import requests
+
 try:
     from config import POKEMONTCG_API_KEY as _POKEMONTCG_KEY
 except Exception:
@@ -66,16 +68,16 @@ def _http_get(url: str, timeout: float = 6.0) -> Optional[bytes]:
         return None
 
 
-def _http_get_json(url: str, timeout: float = 8.0) -> Optional[dict]:
+_SESSION = requests.Session()   # keep-alive + gzip → matches curl (urllib was ~2x slower)
+
+
+def _http_get_json(url: str, timeout: float = 15.0) -> Optional[dict]:
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     if "pokemontcg.io" in url and _POKEMONTCG_KEY:
         headers["X-Api-Key"] = _POKEMONTCG_KEY   # 20k/day vs keyless ~1k → far fewer 429s
-    req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            if r.status != 200:
-                return None
-            return json.loads(r.read())
+        r = _SESSION.get(url, headers=headers, timeout=timeout)
+        return r.json() if r.status_code == 200 else None
     except Exception:
         return None
 

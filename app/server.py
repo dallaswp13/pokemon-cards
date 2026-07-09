@@ -89,7 +89,7 @@ def _spawn_image_prewarm(results: list[MatchResult]) -> None:
     targets = targets[:500]
 
     def _go():
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=12) as pool:
             for _, tid, cat, name, sname, num in targets:
                 pool.submit(images_mod.resolve_image_url, tid, cat, name, sname, num)
 
