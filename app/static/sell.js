@@ -20,6 +20,7 @@
   let summary = null;
   const filters = { channel: "", band: "", keep: "", grade: "", tag: "", search: "" };
   let sortKey = "value";
+  let viewMode = localStorage.getItem("sellViewMode") || "grid";   // 'grid' | 'list'
 
   function allSections() { return document.querySelectorAll("main > section.card"); }
   function openSell() {
@@ -27,9 +28,19 @@
     $("#sell-section").classList.remove("hidden");
     load();
   }
-  function backToSummary() {
-    $("#sell-section").classList.add("hidden");
-    $("#summary-section").classList.remove("hidden");
+  function showMatcher() {
+    // Matcher is now secondary — reveal the upload/match tools.
+    allSections().forEach((s) => s.classList.add("hidden"));
+    $("#upload-section").classList.remove("hidden");
+  }
+
+  function setView(mode) {
+    viewMode = mode;
+    localStorage.setItem("sellViewMode", mode);
+    const g = $("#view-grid"), l = $("#view-list");
+    if (g) g.classList.toggle("active", mode === "grid");
+    if (l) l.classList.toggle("active", mode === "list");
+    render();
   }
 
   async function load() {
@@ -104,6 +115,7 @@
       (capped ? ` · showing first ${RENDER_CAP}` : "");
     $("#sell-empty").classList.toggle("hidden", shown.length > 0);
     const grid = $("#sell-grid");
+    grid.className = "sell-grid" + (viewMode === "list" ? " list-view" : "");
     grid.innerHTML = "";
     const frag = document.createDocumentFragment();
     shown.slice(0, RENDER_CAP).forEach((r) => frag.appendChild(tile(r)));
@@ -184,7 +196,9 @@
     ["#open-sell-btn", "#open-sell-btn-landing"].forEach((sel) => {
       const b = $(sel); if (b) b.addEventListener("click", openSell);
     });
-    const back = $("#sell-back-btn"); if (back) back.addEventListener("click", backToSummary);
+    const matcher = $("#sell-matcher-btn"); if (matcher) matcher.addEventListener("click", showMatcher);
+    const vg = $("#view-grid"); if (vg) vg.addEventListener("click", () => setView("grid"));
+    const vl = $("#view-list"); if (vl) vl.addEventListener("click", () => setView("list"));
     document.querySelectorAll("#sell-filters .chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         const f = btn.dataset.filter, v = btn.dataset.value;
@@ -204,7 +218,13 @@
     const tf = $("#sell-tag-filter"); if (tf) tf.addEventListener("input", (e) => { filters.tag = e.target.value.trim(); render(); });
     const sf = $("#sell-search"); if (sf) sf.addEventListener("input", (e) => { filters.search = e.target.value.trim(); render(); });
     document.querySelectorAll('#sell-filters .chip[data-value=""]').forEach((b) => b.classList.add("active"));
+    // Reflect the persisted view mode in the toggle buttons.
+    const g = $("#view-grid"), l = $("#view-list");
+    if (g) g.classList.toggle("active", viewMode === "grid");
+    if (l) l.classList.toggle("active", viewMode === "list");
   }
 
   wire();
+  // Cockpit is the primary view — open it straight away (auto-matches if needed).
+  openSell();
 })();

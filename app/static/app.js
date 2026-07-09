@@ -674,9 +674,9 @@ function renderSheet() {
   try {
     const res = await fetch("/api/state");
     const data = await res.json();
-    if (data.session && data.stats) {
-      renderSummary(data.stats);
-      setStatus(`Resumed session ${data.session}`, "");
-    }
+    // The Sell Cockpit is the primary view (sell.js auto-opens it). Don't reveal
+    // the matcher summary on load — it renders when you open Matcher tools and
+    // run/re-run a match.
+    if (data.session) setStatus(`Session ${data.session} ready`, "");
   } catch {}
 })();

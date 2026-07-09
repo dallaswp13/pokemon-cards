@@ -9,11 +9,18 @@ Scryfall/Pokemon TCG API handle the rest.
 
 import hashlib
 import json
+import re
 import threading
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
+
+try:
+    from config import POKEMONTCG_API_KEY as _POKEMONTCG_KEY
+except Exception:
+    _POKEMONTCG_KEY = ""
 
 CACHE_DIR  = Path(__file__).parent / "state" / "image_cache"
 CACHE_META = Path(__file__).parent / "state" / "image_meta.json"
@@ -59,11 +66,11 @@ def _http_get(url: str, timeout: float = 6.0) -> Optional[bytes]:
         return None
 
 
-def _http_get_json(url: str, timeout: float = 6.0) -> Optional[dict]:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-    )
+def _http_get_json(url: str, timeout: float = 8.0) -> Optional[dict]:
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if "pokemontcg.io" in url and _POKEMONTCG_KEY:
+        headers["X-Api-Key"] = _POKEMONTCG_KEY   # 20k/day vs keyless ~1k → far fewer 429s
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.status != 200:
@@ -172,3 +179,84 @@ def get_image(
             return bytes_
 
         return None
+
+
+# ── Direct CDN URL resolution (fast path — browser loads from the CDN itself) ──
+# Instead of proxying image BYTES through Flask (slow, serialized), resolve each
+# card's direct CDN image URL once and 302-redirect the browser to it. Cached to
+# disk with negative caching so misses don't re-hit the network every render.
+
+URL_CACHE = Path(__file__).parent / "state" / "image_url_cache.json"
+_URL: dict[str, dict] = {}
+_URL_TTL = 6 * 3600          # re-attempt a miss after 6h; hits effectively permanent
+
+
+def _load_url_cache() -> None:
+    global _URL
+    if not _URL and URL_CACHE.exists():
+        try:
+            _URL = json.loads(URL_CACHE.read_text())
+        except Exception:
+            _URL = {}
+
+
+def _save_url_cache() -> None:
+    URL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    URL_CACHE.write_text(json.dumps(_URL))
+
+
+def _pokemon_image_url(name: str, set_name: str, number: str) -> Optional[str]:
+    norm_num = number.split("/")[0].lstrip("0") or "0"
+    # pokemontcg.io's `name` is the bare card name — strip parentheticals like
+    # "(Alternate Full Art)" and any " - 186/196" suffix or the query won't match.
+    bare = re.sub(r"\s*\([^)]*\)", "", name).split(" - ")[0].strip()
+    q = urllib.parse.quote(f'name:"{bare}" number:{norm_num}')
+    data = _http_get_json(f"https://api.pokemontcg.io/v2/cards?q={q}&pageSize=10")
+    cards = data.get("data", []) if data else []
+    if not cards and norm_num:
+        # Retry by number alone (handles promos/odd numbering), then match by name.
+        data = _http_get_json(f"https://api.pokemontcg.io/v2/cards?q=number:{norm_num}&pageSize=25")
+        blob = data.get("data", []) if data else []
+        bn = bare.lower()
+        cards = [c for c in blob if bn in c.get("name", "").lower()]
+    if not cards:
+        return None
+    target = set(set_name.lower().split())
+    best = max(cards, key=lambda c: len(target & set(c.get("set", {}).get("name", "").lower().split())))
+    imgs = best.get("images", {})
+    return imgs.get("small") or imgs.get("large")
+
+
+def _scryfall_image_url(tid: str, name: str, set_name: str) -> Optional[str]:
+    data = _http_get_json(f"https://api.scryfall.com/cards/tcgplayer/{tid}")
+    if data and data.get("image_uris", {}).get("normal"):
+        return data["image_uris"]["normal"]
+    q = urllib.parse.quote(f'!"{name}" set:"{set_name}"')
+    data = _http_get_json(f"https://api.scryfall.com/cards/search?q={q}&unique=cards")
+    if data and data.get("data"):
+        return data["data"][0].get("image_uris", {}).get("normal")
+    return None
+
+
+def resolve_image_url(tcgplayer_id: str, category: str, name: str,
+                      set_name: str, number: str) -> Optional[str]:
+    """Direct CDN image URL for a card (cached, negative-cached). None if unresolved."""
+    if not _URL:
+        _load_url_cache()
+    ent = _URL.get(tcgplayer_id)
+    if ent:
+        # Hits are cached ~permanently; misses only 15 min so a transient
+        # rate-limit/network blip re-resolves instead of hiding art for hours.
+        ttl = _URL_TTL if ent.get("url") else 900
+        if (time.time() - ent.get("ts", 0)) < ttl:
+            return ent.get("url")
+
+    if category == "Magic: The Gathering":
+        url = _scryfall_image_url(tcgplayer_id, name, set_name)
+    else:
+        url = _pokemon_image_url(name, set_name, number)
+
+    with _LOCK:
+        _URL[tcgplayer_id] = {"url": url, "ts": time.time()}
+        _save_url_cache()
+    return url

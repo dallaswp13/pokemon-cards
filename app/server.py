@@ -12,7 +12,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 
 sys.path.insert(0, str(Path(__file__).parent))
 from matcher import run_match, MatchResult, TcgpRow, load_tcgp  # noqa: E402
@@ -77,11 +77,11 @@ def _spawn_image_prewarm(results: list[MatchResult]) -> None:
             targets.append((m.tcgplayer_id, cat, m.product_name, m.set_name, m.number))
 
     def _go():
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        # Resolve direct CDN URLs (fast, cached) so the cockpit's <img> redirects
+        # are instant. Most-valuable cards first (results arrive value-sorted-ish).
+        with ThreadPoolExecutor(max_workers=12) as pool:
             for tid, cat, name, sname, num in targets:
-                pool.submit(images_mod.get_image,
-                            tcgplayer_id=tid, category=cat,
-                            name=name, set_name=sname, number=num, size=200)
+                pool.submit(images_mod.resolve_image_url, tid, cat, name, sname, num)
 
     threading.Thread(target=_go, daemon=True).start()
 
@@ -237,35 +237,26 @@ def api_results():
 @app.route("/api/image/<tid>")
 def api_image(tid: str):
     """
-    Serve a card image, falling back through TCGP CDN → Scryfall / Pokemon TCG API.
-    Cached to app/state/image_cache/.
-    Query: ?size=400 (default 400)
+    Resolve the card's direct CDN image URL and 302-redirect the browser to it,
+    so images load from the CDN in parallel instead of being proxied (byte-by-
+    byte) through this dev server. URLs are cached (+negative-cached) on disk and
+    pre-warmed after each match.
     """
     _load_tcgp_index()
     row = TCGP_BY_ID.get(tid)
     if row is None:
         return Response("unknown tcgplayer_id", status=404)
 
-    try:
-        size = int(request.args.get("size", "400"))
-    except ValueError:
-        size = 400
-
     pl = (row.raw.get("Product Line") or "").lower() if row.raw else ""
     category = "Magic: The Gathering" if pl == "magic" else "Pokemon"
 
-    img = images_mod.get_image(
-        tcgplayer_id=tid,
-        category=category,
-        name=row.product_name,
-        set_name=row.set_name,
-        number=row.number,
-        size=size,
-    )
-    if img is None:
+    url = images_mod.resolve_image_url(tid, category, row.product_name,
+                                       row.set_name, row.number)
+    if not url:
         return Response("not found", status=404)
-    return Response(img, mimetype="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=86400"})
+    resp = redirect(url, code=302)
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 @app.route("/api/review")
@@ -579,6 +570,7 @@ def api_export():
     #   - it has a matched candidate (user-confirmed link OR matcher's auto pick), AND
     #   - link_kind is not 'skip' (no-match), AND
     #   - attribute is not set (i.e. it's "for sale" — not personal/psa/bad/ignore)
+    import channels
     augmented: list[MatchResult] = []
     for idx, r in enumerate(s["results"]):
         d = decisions.get(idx)
@@ -587,6 +579,12 @@ def api_export():
             # Personal/PSA/bad/ignore → exclude from TCGP output
             continue
         if d and d.get("link_kind") == "skip":
+            continue
+
+        # Only cards ROUTED to TCGplayer (or manually tagged 'tcgplayer') belong in
+        # the TCGP upload sheet — eBay/bulk cards are sold elsewhere.
+        tags = (d or {}).get("tags", [])
+        if channels.route_row(r.inventory_row).channel != "TCGplayer" and "tcgplayer" not in tags:
             continue
 
         if d and d.get("link_kind") == "confirm" and d.get("tcgplayer_id"):

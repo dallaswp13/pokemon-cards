@@ -8,8 +8,8 @@
 </head>
 <body>
   <header>
-    <h1>TCGP Inventory Matcher</h1>
-    <p class="subtitle">Match a portfolio export against TCGplayer pricing sheets.</p>
+    <h1>🃏 Pokémon Sell Cockpit</h1>
+    <p class="subtitle">Liquidate your collection piece-by-piece for the highest % back · TCGplayer matcher built in.</p>
   </header>
 
   <main>
@@ -171,6 +171,10 @@
           <p id="sell-meta" class="meta">Loading…</p>
         </div>
         <div class="review-nav">
+          <div class="view-toggle">
+            <button type="button" id="view-grid" class="vt active" title="Grid view">▦</button>
+            <button type="button" id="view-list" class="vt" title="List view">☰</button>
+          </div>
           <label class="filter-label">Sort
             <select id="sell-sort">
               <option value="value">Value</option>
@@ -180,7 +184,7 @@
             </select>
           </label>
           <input type="search" id="sell-search" placeholder="Search name or set…" />
-          <button type="button" id="sell-back-btn" class="secondary">Done</button>
+          <button type="button" id="sell-matcher-btn" class="secondary">🔧 Matcher</button>
         </div>
       </div>
 

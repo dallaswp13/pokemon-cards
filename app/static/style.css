@@ -481,3 +481,20 @@ input[type="search"] {
 .sell-cta { margin-top:16px; padding-top:16px; border-top:1px solid var(--border); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .sell-cta .dim { color:var(--text-dim); font-size:13px; }
 #open-sell-btn-landing { font-size:15px; padding:10px 18px; }
+
+/* View toggle + list view */
+.view-toggle { display:inline-flex; border:1px solid var(--border-strong); border-radius:6px; overflow:hidden; }
+.view-toggle .vt { background:transparent; border:none; color:var(--text-dim); padding:4px 11px; cursor:pointer; font-size:14px; line-height:1; }
+.view-toggle .vt.active { background:var(--accent); color:#fff; }
+.sell-grid.list-view { grid-template-columns:1fr; gap:4px; }
+.sell-grid.list-view .sell-tile { flex-direction:row; align-items:stretch; border-radius:6px; }
+.sell-grid.list-view .tile-img { width:42px; min-width:42px; height:58px; aspect-ratio:auto; }
+.sell-grid.list-view .tile-img img { object-fit:cover; }
+.sell-grid.list-view .keep-star { top:1px; right:1px; width:19px; height:19px; font-size:11px; }
+.sell-grid.list-view .tile-body { flex:1; flex-direction:row; align-items:center; gap:10px; flex-wrap:wrap; padding:3px 12px; }
+.sell-grid.list-view .tile-name { flex:1 1 200px; min-width:120px; }
+.sell-grid.list-view .tile-sub { flex:0 0 auto; max-width:190px; }
+.sell-grid.list-view .tile-row { flex:0 0 auto; gap:8px; margin:0; }
+.sell-grid.list-view .tile-net,
+.sell-grid.list-view .tile-flags,
+.sell-grid.list-view .tile-tags { flex:0 0 auto; margin:0; }
