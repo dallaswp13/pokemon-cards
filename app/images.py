@@ -205,26 +205,51 @@ def _save_url_cache() -> None:
     URL_CACHE.write_text(json.dumps(_URL))
 
 
+_SET_STOPWORDS = {"sv", "swsh", "sm", "xy", "ex", "the", "of", "and", "pokemon",
+                  "tcg", "promo", "promos", "trainer", "gallery", "set", "series"}
+
+
+def _setwords(s: str) -> set:
+    return {w for w in re.findall(r"\w+", s.lower()) if w not in _SET_STOPWORDS}
+
+
+def _card_img(c: dict) -> Optional[str]:
+    im = c.get("images", {})
+    return im.get("small") or im.get("large")
+
+
 def _pokemon_image_url(name: str, set_name: str, number: str) -> Optional[str]:
     norm_num = number.split("/")[0].lstrip("0") or "0"
+    denom = None
+    if "/" in number:
+        d = number.split("/")[1].strip().lstrip("0")
+        denom = d if d.isdigit() else None
     # pokemontcg.io's `name` is the bare card name — strip parentheticals like
     # "(Alternate Full Art)" and any " - 186/196" suffix or the query won't match.
     bare = re.sub(r"\s*\([^)]*\)", "", name).split(" - ")[0].strip()
     q = urllib.parse.quote(f'name:"{bare}" number:{norm_num}')
-    data = _http_get_json(f"https://api.pokemontcg.io/v2/cards?q={q}&pageSize=10")
+    data = _http_get_json(f"https://api.pokemontcg.io/v2/cards?q={q}&pageSize=25")
     cards = data.get("data", []) if data else []
-    if not cards and norm_num:
-        # Retry by number alone (handles promos/odd numbering), then match by name.
-        data = _http_get_json(f"https://api.pokemontcg.io/v2/cards?q=number:{norm_num}&pageSize=25")
-        blob = data.get("data", []) if data else []
-        bn = bare.lower()
-        cards = [c for c in blob if bn in c.get("name", "").lower()]
     if not cards:
         return None
-    target = set(set_name.lower().split())
-    best = max(cards, key=lambda c: len(target & set(c.get("set", {}).get("name", "").lower().split())))
-    imgs = best.get("images", {})
-    return imgs.get("small") or imgs.get("large")
+    if len(cards) == 1:
+        return _card_img(cards[0])
+
+    # Multiple same-name/same-number cards across sets → disambiguate by the set
+    # (word overlap) and, decisively, the printed set total (the denominator).
+    target = _setwords(set_name)
+
+    def score(c):
+        cs = c.get("set", {})
+        overlap = len(target & _setwords(cs.get("name", "")))
+        denom_hit = 1 if denom and str(cs.get("printedTotal") or cs.get("total") or "") == denom else 0
+        return (denom_hit, overlap)
+
+    best = max(cards, key=score)
+    denom_hit, overlap = score(best)
+    if overlap == 0 and denom_hit == 0:
+        return None   # ambiguous — no image beats the wrong image
+    return _card_img(best)
 
 
 def _scryfall_image_url(tid: str, name: str, set_name: str) -> Optional[str]:
@@ -239,8 +264,10 @@ def _scryfall_image_url(tid: str, name: str, set_name: str) -> Optional[str]:
 
 
 def resolve_image_url(tcgplayer_id: str, category: str, name: str,
-                      set_name: str, number: str) -> Optional[str]:
-    """Direct CDN image URL for a card (cached, negative-cached). None if unresolved."""
+                      set_name: str, number: str, cached_only: bool = False) -> Optional[str]:
+    """Direct CDN image URL for a card (cached, negative-cached). None if unresolved.
+    cached_only=True returns the cached value (or None) without any network call —
+    used by /api/sell so serving the grid never blocks on resolution."""
     if not _URL:
         _load_url_cache()
     ent = _URL.get(tcgplayer_id)
@@ -250,6 +277,8 @@ def resolve_image_url(tcgplayer_id: str, category: str, name: str,
         ttl = _URL_TTL if ent.get("url") else 900
         if (time.time() - ent.get("ts", 0)) < ttl:
             return ent.get("url")
+    if cached_only:
+        return None
 
     if category == "Magic: The Gathering":
         url = _scryfall_image_url(tcgplayer_id, name, set_name)

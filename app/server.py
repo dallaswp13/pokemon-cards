@@ -80,13 +80,17 @@ def _spawn_image_prewarm(results: list[MatchResult]) -> None:
             m = r.matched_row
             pl = (m.raw.get("Product Line") or "").lower() if m.raw else ""
             cat = "Magic: The Gathering" if pl == "magic" else "Pokemon"
-            targets.append((m.tcgplayer_id, cat, m.product_name, m.set_name, m.number))
+            targets.append((r.inventory_row.market_price, m.tcgplayer_id, cat,
+                            m.product_name, m.set_name, m.number))
+    # Resolve the most valuable cards first (that's what the cockpit shows) and
+    # cap the batch — keyless pokemontcg.io rate-limits, so don't burn the quota
+    # on the sub-$1 tail; those resolve on-demand when actually viewed.
+    targets.sort(key=lambda t: -t[0])
+    targets = targets[:500]
 
     def _go():
-        # Resolve direct CDN URLs (fast, cached) so the cockpit's <img> redirects
-        # are instant. Most-valuable cards first (results arrive value-sorted-ish).
-        with ThreadPoolExecutor(max_workers=12) as pool:
-            for tid, cat, name, sname, num in targets:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for _, tid, cat, name, sname, num in targets:
                 pool.submit(images_mod.resolve_image_url, tid, cat, name, sname, num)
 
     threading.Thread(target=_go, daemon=True).start()
@@ -366,21 +370,37 @@ def api_sell():
     decisions = _decisions_for_session(s)
 
     rows = []
+    keeper_ct, keeper_val = 0, 0.0
     for idx, r in enumerate(s["results"]):
         inv = r.inventory_row
         d = decisions.get(idx) or {}
-        # Resolve the tcgplayer_id used for the card image.
+        cond = d.get("condition") or "NM"
+        effective = inv.market_price * CONDITION_FACTORS.get(cond, 1.0)
+        tags = d.get("tags", [])
+
+        # Keepers now live in Holds — keep them out of the sell grid.
+        if d.get("attribute") == "personal":
+            keeper_ct += 1
+            keeper_val += effective * inv.quantity
+            continue
+
         tid = None
         if d.get("link_kind") == "confirm" and d.get("tcgplayer_id"):
             tid = d["tcgplayer_id"]
         elif r.matched_row is not None:
             tid = r.matched_row.tcgplayer_id
+        img_url = (images_mod.resolve_image_url(tid, inv.category, inv.product_name,
+                   inv.set_name, inv.card_number, cached_only=True) if tid else None)
 
-        cond = d.get("condition") or "NM"
-        effective = inv.market_price * CONDITION_FACTORS.get(cond, 1.0)
         route = channels.route_row(inv, price=effective)
-        attr = d.get("attribute")
         nkey = _natural_key_for(r)
+
+        # Off-center deters grading (gem rate collapses) → never a grade candidate.
+        off_center = "off-center" in tags
+        would_grade = bool(route.grade and route.grade.grade)
+        grade_flag = would_grade and not off_center
+        grade_reason = ("off-center — not a grading candidate" if (off_center and would_grade)
+                        else (route.grade.reason if route.grade else ""))
         rows.append({
             "row_idx":        idx,
             "natural_key":    nkey,
@@ -394,6 +414,7 @@ def api_sell():
             "condition":      cond,
             "category":       inv.category,
             "tcgplayer_id":   tid,
+            "image_url":      img_url,
             "channel":        route.channel,
             "channel_reason": route.reason,
             "flags":          route.flags,
@@ -408,12 +429,13 @@ def api_sell():
             "net_total":      round(route.total_net, 2),
             "net_pct":        round(route.net_pct, 3),
             "sell_now":       route.sell_now,
-            "grade_flag":     bool(route.grade and route.grade.grade),
-            "grade_gap":      round(route.grade.ev_gap, 2) if route.grade else 0,
-            "grade_reason":   route.grade.reason if route.grade else "",
-            "keep":           attr == "personal",
-            "attribute":      attr,
-            "tags":           d.get("tags", []),
+            "grade_flag":     grade_flag,
+            "grade_gap":      0 if off_center else (round(route.grade.ev_gap, 2) if route.grade else 0),
+            "grade_reason":   grade_reason,
+            "off_center":     off_center,
+            "keep":           False,
+            "attribute":      d.get("attribute"),
+            "tags":           tags,
             "status":         d.get("status"),
             "sale_price":     d.get("sale_price"),
             "listed_at":      d.get("listed_at"),
@@ -422,12 +444,14 @@ def api_sell():
             "has_back":       _photo_path(nkey, "back").exists(),
         })
     rows.sort(key=lambda x: -x["price"])   # most valuable first (default working order)
-    return jsonify({"rows": rows, "count": len(rows), "summary": _sell_summary(rows)})
+    return jsonify({"rows": rows, "count": len(rows),
+                    "summary": _sell_summary(rows, keeper_ct, round(keeper_val, 2))})
 
 
-def _sell_summary(rows: list[dict]) -> dict:
-    """Portfolio recovery rollup: net % back, by tier, incl/excl bulk tail, grade queue."""
-    sellable = [r for r in rows if not r["keep"]]
+def _sell_summary(rows: list[dict], keepers_count: int = 0, keepers_value: float = 0.0) -> dict:
+    """Portfolio recovery rollup: net % back, by tier, incl/excl bulk tail, grade queue.
+    Keepers are excluded from `rows` (they're in Holds); counts come in as args."""
+    sellable = rows
     def agg(rs):
         mkt = sum(r["price"] * r["qty"] for r in rs)
         net = sum(r["net_total"] for r in rs)
@@ -442,7 +466,6 @@ def _sell_summary(rows: list[dict]) -> dict:
     nbm, nbn, nbp = agg(non_bulk)
 
     grade_cands = [r for r in sellable if r["grade_flag"]]
-    keepers = [r for r in rows if r["keep"]]
     consign = [r for r in sellable if r["price"] >= 2000]   # config.Grading.CONSIGN_FLOOR_GRADED
 
     # Ledger — actuals as you sell down.
@@ -457,8 +480,8 @@ def _sell_summary(rows: list[dict]) -> dict:
         "grade_candidates": len(grade_cands),
         "grade_extra": round(sum(r["grade_gap"] for r in grade_cands), 2),
         "consign_eligible": len(consign),
-        "keepers": len(keepers),
-        "keepers_value": round(sum(r["price"] * r["qty"] for r in keepers), 2),
+        "keepers": keepers_count,
+        "keepers_value": keepers_value,
         "count_sellable": len(sellable),
         "listed": len(listed),
         "sold": len(sold),
@@ -583,13 +606,15 @@ def api_condition():
 
 @app.route("/api/holds")
 def api_holds():
-    """Graded + sealed items — long-term holds, never routed for sale."""
+    """Long-term holds: graded + sealed (set aside) + keepers (★ marked personal)."""
     import images as im
+    from config import CONDITION_FACTORS
     h = CURRENT_SESSION["hash"]
     if not h or h not in SESSIONS:
         return jsonify({"error": "no active session"}), 400
+    s = SESSIONS[h]
     items = []
-    for row in SESSIONS[h]["set_aside"]:
+    for row in s["set_aside"]:
         reason = row.get("_reason", "")
         if reason not in ("graded", "sealed"):
             continue
@@ -602,18 +627,37 @@ def api_holds():
             qty = 1
         img = None
         if reason == "graded" and row.get("Category") == "Pokemon":
-            img = im.resolve_image_url("hold-" + name + num, "Pokemon", name, setn, num)
+            img = im.resolve_image_url("hold-" + name + num, "Pokemon", name, setn, num, cached_only=True)
         items.append({
             "name": name, "set": setn, "number": num, "grade": row.get("Grade", ""),
             "reason": reason, "qty": qty,
             "value": round(float(row.get("_market_value", 0) or 0), 2), "image_url": img,
         })
+
+    # Keepers — raw singles the user ★-marked as personal.
+    decisions = _decisions_for_session(s)
+    for idx, r in enumerate(s["results"]):
+        d = decisions.get(idx) or {}
+        if d.get("attribute") != "personal":
+            continue
+        inv = r.inventory_row
+        eff = inv.market_price * CONDITION_FACTORS.get(d.get("condition") or "NM", 1.0)
+        tid = d.get("tcgplayer_id") or (r.matched_row.tcgplayer_id if r.matched_row else None)
+        img = im.resolve_image_url(tid, inv.category, inv.product_name, inv.set_name,
+                                   inv.card_number, cached_only=True) if tid else None
+        items.append({
+            "name": inv.product_name, "set": inv.set_name, "number": inv.card_number,
+            "grade": d.get("condition") or "", "reason": "keeper", "qty": inv.quantity,
+            "value": round(eff * inv.quantity, 2), "image_url": img,
+        })
+
     items.sort(key=lambda x: -x["value"])
     return jsonify({
         "items": items, "count": len(items),
         "total": round(sum(i["value"] for i in items), 2),
         "graded": sum(1 for i in items if i["reason"] == "graded"),
         "sealed": sum(1 for i in items if i["reason"] == "sealed"),
+        "keepers": sum(1 for i in items if i["reason"] == "keeper"),
     })
 
 

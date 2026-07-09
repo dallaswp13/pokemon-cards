@@ -193,39 +193,31 @@
       <div id="sell-summary" class="sell-summary"></div>
 
       <div id="sell-filters" class="sell-filters">
-        <div class="filter-row">
-          <span class="filter-label">Channel:</span>
-          <button class="chip" data-filter="channel" data-value="">All</button>
-          <button class="chip" data-filter="channel" data-value="eBay (auction)">eBay auction</button>
-          <button class="chip" data-filter="channel" data-value="eBay (fixed)">eBay fixed</button>
-          <button class="chip" data-filter="channel" data-value="TCGplayer">TCGplayer</button>
-          <button class="chip" data-filter="channel" data-value="Bulk lot">Bulk</button>
-        </div>
-        <div class="filter-row">
-          <span class="filter-label">Price:</span>
-          <button class="chip" data-filter="band" data-value="">All</button>
-          <button class="chip" data-filter="band" data-value="u1">&lt;$1</button>
-          <button class="chip" data-filter="band" data-value="1_5">$1–5</button>
-          <button class="chip" data-filter="band" data-value="5_50">$5–50</button>
-          <button class="chip" data-filter="band" data-value="o50">$50+</button>
-        </div>
-        <div class="filter-row">
-          <span class="filter-label">Show:</span>
-          <button class="chip" data-filter="keep" data-value="">All</button>
-          <button class="chip" data-filter="keep" data-value="keep">★ Keepers</button>
-          <button class="chip" data-filter="keep" data-value="sell">For sale</button>
-          <button class="chip" data-filter="grade" data-value="grade">◆ Grade-first</button>
-          <span class="filter-label" style="margin-left:12px">Tag:</span>
-          <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
-        </div>
-        <div class="filter-row">
-          <span class="filter-label">Status:</span>
-          <button class="chip" data-filter="status" data-value="">All</button>
-          <button class="chip" data-filter="status" data-value="unlisted">Unlisted</button>
-          <button class="chip" data-filter="status" data-value="listed">📋 Listed</button>
-          <button class="chip" data-filter="status" data-value="sold">✅ Sold</button>
-          <button class="chip" data-filter="status" data-value="photos">📷 Has photos</button>
-        </div>
+        <select id="f-channel" class="f-sel" title="Channel">
+          <option value="">All channels</option>
+          <option value="eBay (auction)">eBay auction</option>
+          <option value="eBay (fixed)">eBay fixed</option>
+          <option value="TCGplayer">TCGplayer</option>
+          <option value="Bulk lot">Bulk</option>
+        </select>
+        <select id="f-band" class="f-sel" title="Price band">
+          <option value="">All prices</option>
+          <option value="o50">$50+</option>
+          <option value="5_50">$5–50</option>
+          <option value="1_5">$1–5</option>
+          <option value="u1">&lt;$1</option>
+        </select>
+        <select id="f-status" class="f-sel" title="Status">
+          <option value="">Any status</option>
+          <option value="unlisted">Unlisted</option>
+          <option value="listed">Listed</option>
+          <option value="sold">Sold</option>
+        </select>
+        <button class="chip" data-filter="grade" data-value="grade">◆ Grade</button>
+        <button class="chip" data-filter="oc" data-value="oc">◎ Off-center</button>
+        <button class="chip" data-filter="photos" data-value="photos">📷 Photos</button>
+        <button class="chip" data-filter="shop" data-value="shop">🏪 Drop-off</button>
+        <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
       </div>
 
       <div id="sell-grid" class="sell-grid"></div>

@@ -438,7 +438,11 @@ input[type="search"] {
 .tile-img img { width:100%; height:100%; object-fit:contain; }
 .tile-img img.broken { display:none; }
 .tile-img .noimg { color:var(--text-dim); font-size:12px; }
-.keep-star { position:absolute; top:6px; right:6px; background:rgba(0,0,0,0.55); border:none; color:var(--warn); font-size:18px; line-height:1; width:30px; height:30px; border-radius:50%; cursor:pointer; }
+.keep-star { position:absolute; top:6px; right:6px; background:rgba(0,0,0,0.55); border:none; color:var(--warn); font-size:15px; line-height:1; width:28px; height:28px; border-radius:50%; cursor:pointer; padding:0; display:flex; align-items:center; justify-content:center; }
+/* Cleaner compact filter bar */
+.sell-filters { flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; }
+.f-sel { background:var(--bg); border:1px solid var(--border-strong); color:var(--text); border-radius:6px; padding:5px 8px; font-size:13px; }
+.m-grade.oc { color:var(--text-dim); }
 .keep-star:hover { background:rgba(0,0,0,0.85); }
 .tile-body { padding:8px 10px 10px; display:flex; flex-direction:column; gap:4px; }
 .tile-name { font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

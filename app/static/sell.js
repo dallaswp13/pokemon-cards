@@ -18,7 +18,7 @@
 
   let rows = [];
   let summary = null;
-  const filters = { channel: "", band: "", keep: "", grade: "", tag: "", search: "", status: "" };
+  const filters = { channel: "", band: "", status: "", grade: "", oc: "", photos: "", shop: "", tag: "", search: "" };
   let modalKey = null;   // natural_key of the card open in the detail modal
   let sortKey = "value";
   let viewMode = localStorage.getItem("sellViewMode") || "grid";   // 'grid' | 'list'
@@ -100,13 +100,13 @@
   function passes(row) {
     if (filters.channel && row.channel !== filters.channel) return false;
     if (filters.band && row.band !== filters.band) return false;
-    if (filters.keep === "keep" && !row.keep) return false;
-    if (filters.keep === "sell" && row.keep) return false;
-    if (filters.grade === "grade" && !row.grade_flag) return false;
     if (filters.status === "unlisted" && row.status) return false;
     if (filters.status === "listed" && row.status !== "listed") return false;
     if (filters.status === "sold" && row.status !== "sold") return false;
-    if (filters.status === "photos" && !(row.has_front || row.has_back)) return false;
+    if (filters.grade === "grade" && !row.grade_flag) return false;
+    if (filters.oc === "oc" && !row.off_center) return false;
+    if (filters.photos === "photos" && !(row.has_front || row.has_back)) return false;
+    if (filters.shop === "shop" && !(row.tags || []).includes("shop")) return false;
     if (filters.tag && !(row.tags || []).some((x) => x.includes(filters.tag.toLowerCase()))) return false;
     if (filters.search) {
       const q = filters.search.toLowerCase();
@@ -144,17 +144,20 @@
   function tile(row) {
     const el = document.createElement("div");
     el.className = "sell-tile" + (row.keep ? " is-keep" : "");
-    const img = row.tcgplayer_id
-      ? `<img loading="lazy" src="/api/image/${row.tcgplayer_id}?size=200" onerror="this.classList.add('broken')">`
+    const isrc = row.image_url || (row.tcgplayer_id ? `/api/image/${row.tcgplayer_id}` : "");
+    const img = isrc
+      ? `<img loading="lazy" src="${isrc}" onerror="this.classList.add('broken')">`
       : `<div class="noimg">no image</div>`;
     const flags = (row.flags || []).map(flagChip).join("");
     const gradeBadge = row.grade_flag
       ? `<span class="flag grade" title="${esc(row.grade_reason)}">◆ grade +${money(row.grade_gap)}</span>` : "";
-    const tags = (row.tags || []).map((t) =>
+    const tags = (row.tags || []).filter((t) => t !== "shop" && t !== "off-center").map((t) =>
       `<span class="tag">${esc(t)}<button class="tag-x" data-act="untag" data-tag="${esc(t)}">×</button></span>`).join("");
     const badges =
       (row.status === "sold" ? '<span class="tb sold" title="Sold">✅</span>'
         : row.status === "listed" ? '<span class="tb listed" title="Listed">📋</span>' : "") +
+      (row.off_center ? '<span class="tb oc" title="Off-center">◎</span>' : "") +
+      ((row.tags || []).includes("shop") ? '<span class="tb shop" title="Shop drop-off">🏪</span>' : "") +
       ((row.has_front || row.has_back) ? '<span class="tb cam" title="Has photos">📷</span>' : "");
     el.innerHTML = `
       <div class="tile-img">${img}
@@ -216,25 +219,23 @@
     const vl = $("#view-list"); if (vl) vl.addEventListener("click", () => setView("list"));
     const bd = $("#modal-backdrop"); if (bd) bd.addEventListener("click", closeCard);
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCard(); });
+    // Dropdown filters (channel / price band / status).
+    [["#f-channel", "channel"], ["#f-band", "band"], ["#f-status", "status"]].forEach(([sel, key]) => {
+      const el = $(sel);
+      if (el) el.addEventListener("change", () => { filters[key] = el.value; render(); });
+    });
+    // Toggle chips (grade / off-center / photos / shop drop-off).
     document.querySelectorAll("#sell-filters .chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         const f = btn.dataset.filter, v = btn.dataset.value;
-        // Toggle grade-first (no "All" chip for it); others pick-one.
-        if (f === "grade") {
-          filters.grade = filters.grade === v ? "" : v;
-          btn.classList.toggle("active", filters.grade === v);
-        } else {
-          filters[f] = v;
-          document.querySelectorAll(`#sell-filters .chip[data-filter="${f}"]`)
-            .forEach((b) => b.classList.toggle("active", b === btn));
-        }
+        filters[f] = filters[f] === v ? "" : v;
+        btn.classList.toggle("active", filters[f] === v);
         render();
       });
     });
     const sort = $("#sell-sort"); if (sort) sort.addEventListener("change", (e) => { sortKey = e.target.value; render(); });
     const tf = $("#sell-tag-filter"); if (tf) tf.addEventListener("input", (e) => { filters.tag = e.target.value.trim(); render(); });
     const sf = $("#sell-search"); if (sf) sf.addEventListener("input", (e) => { filters.search = e.target.value.trim(); render(); });
-    document.querySelectorAll('#sell-filters .chip[data-value=""]').forEach((b) => b.classList.add("active"));
     // Reflect the persisted view mode in the toggle buttons.
     const g = $("#view-grid"), l = $("#view-list");
     if (g) g.classList.toggle("active", viewMode === "grid");
@@ -258,9 +259,12 @@
 
   function openCard(row) {
     modalKey = row.natural_key;
-    const img = row.tcgplayer_id ? `<img src="/api/image/${row.tcgplayer_id}">` : `<div class="noimg">no image</div>`;
-    const grade = row.grade_flag ? `<div class="m-grade">◆ Grade-first — ${esc(row.grade_reason)}</div>` : "";
-    const tags = (row.tags || []).map((t) => `<span class="tag">${esc(t)}<button class="tag-x" data-mact="untag" data-tag="${esc(t)}">×</button></span>`).join("");
+    const isrc = row.image_url || (row.tcgplayer_id ? `/api/image/${row.tcgplayer_id}` : "");
+    const img = isrc ? `<img src="${isrc}">` : `<div class="noimg">no image</div>`;
+    const grade = row.grade_flag
+      ? `<div class="m-grade">◆ Grade-first — ${esc(row.grade_reason)}</div>`
+      : (row.off_center ? `<div class="m-grade oc">◎ Off-center — excluded from grading</div>` : "");
+    const tags = (row.tags || []).filter((t) => t !== "shop" && t !== "off-center").map((t) => `<span class="tag">${esc(t)}<button class="tag-x" data-mact="untag" data-tag="${esc(t)}">×</button></span>`).join("");
     $("#modal-panel").innerHTML = `
       <button class="modal-close" data-mact="close">×</button>
       <div class="modal-grid">
@@ -288,6 +292,7 @@
           </div>
           <div class="m-row">
             <button class="m-btn ${row.keep ? "on" : ""}" data-mact="keep">${row.keep ? "★ Keeper" : "☆ Keep"}</button>
+            <button class="m-btn ${(row.tags || []).includes("off-center") ? "on" : ""}" data-mact="oc">◎ Off-center</button>
             <button class="m-btn" data-mact="addtag">+ tag</button>
             <span class="m-tags">${tags}</span>
           </div>
@@ -359,9 +364,10 @@
       await statusPatch(row, body); await refreshReopen(row.natural_key);
     } else if (act === "unlist") {
       await statusPatch(row, { status: null }); await refreshReopen(row.natural_key);
-    } else if (act === "shop") {
-      const has = (row.tags || []).includes("shop");
-      const tg = has ? (row.tags || []).filter((x) => x !== "shop") : [...(row.tags || []), "shop"];
+    } else if (act === "shop" || act === "oc") {
+      const t = act === "oc" ? "off-center" : "shop";
+      const has = (row.tags || []).includes(t);
+      const tg = has ? (row.tags || []).filter((x) => x !== t) : [...(row.tags || []), t];
       await patch(row, { tags: tg }); await refreshReopen(row.natural_key);
     } else if (act === "delphoto") {
       const side = ev.target.dataset.side;
