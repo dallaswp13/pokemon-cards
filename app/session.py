@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     tcgplayer_id  TEXT,
     attribute     TEXT,
     notes         TEXT,
+    tags          TEXT,
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 )
 """
@@ -65,6 +66,10 @@ def init_db() -> None:
     """Create the table and run any one-shot migrations from old schemas."""
     with _open() as conn:
         conn.execute(DDL)
+        # Add the tags column to pre-existing databases.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(decisions)").fetchall()}
+        if "tags" not in cols:
+            conn.execute("ALTER TABLE decisions ADD COLUMN tags TEXT")
         _migrate_legacy_per_session(conn)
         conn.commit()
 
@@ -101,6 +106,21 @@ def natural_key(*, category: str, set_name: str, card_number: str,
 
 # ── CRUD ───────────────────────────────────────────────────────────────────
 
+def _norm_tags(tags) -> str:
+    """Normalize a tags value (list or comma string) to a clean comma-joined string."""
+    if isinstance(tags, str):
+        parts = tags.split(",")
+    else:
+        parts = list(tags or [])
+    seen, out = set(), []
+    for t in parts:
+        t = str(t).strip().lower()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return ",".join(out)
+
+
 def update_decision(
     nkey: str,
     *,
@@ -108,10 +128,11 @@ def update_decision(
     tcgplayer_id: Optional[str] = "__unset__",
     attribute: Optional[str] = "__unset__",
     notes: Optional[str] = "__unset__",
+    tags="__unset__",
 ) -> None:
     """
-    Patch one or both axes of a decision. Pass None to clear an axis;
-    omit a kwarg to leave it unchanged.
+    Patch any axis of a decision. Pass None to clear an axis; omit a kwarg to
+    leave it unchanged. `tags` accepts a list or comma-separated string.
     """
     if link_kind not in ("__unset__", None) and link_kind not in LINK_KINDS:
         raise ValueError(f"unknown link_kind: {link_kind}")
@@ -123,29 +144,31 @@ def update_decision(
     with _open() as conn:
         conn.execute(DDL)
         cur = conn.execute(
-            "SELECT link_kind, tcgplayer_id, attribute, notes FROM decisions WHERE natural_key=?",
+            "SELECT link_kind, tcgplayer_id, attribute, notes, tags FROM decisions WHERE natural_key=?",
             (nkey,),
         ).fetchone()
-        cur_link, cur_tid, cur_attr, cur_notes = cur if cur else (None, None, None, None)
+        cur_link, cur_tid, cur_attr, cur_notes, cur_tags = cur if cur else (None,)*5
 
         new_link  = cur_link  if link_kind    == "__unset__" else link_kind
         new_tid   = cur_tid   if tcgplayer_id == "__unset__" else tcgplayer_id
         new_attr  = cur_attr  if attribute    == "__unset__" else attribute
         new_notes = cur_notes if notes        == "__unset__" else notes
+        new_tags  = cur_tags  if tags         == "__unset__" else (_norm_tags(tags) or None)
 
-        if new_link is None and new_attr is None and not new_notes:
+        if new_link is None and new_attr is None and not new_notes and not new_tags:
             conn.execute("DELETE FROM decisions WHERE natural_key=?", (nkey,))
         else:
             conn.execute("""
-                INSERT INTO decisions (natural_key, link_kind, tcgplayer_id, attribute, notes, updated_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO decisions (natural_key, link_kind, tcgplayer_id, attribute, notes, tags, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(natural_key) DO UPDATE SET
                     link_kind    = excluded.link_kind,
                     tcgplayer_id = excluded.tcgplayer_id,
                     attribute    = excluded.attribute,
                     notes        = excluded.notes,
+                    tags         = excluded.tags,
                     updated_at   = excluded.updated_at
-            """, (nkey, new_link, new_tid, new_attr, new_notes))
+            """, (nkey, new_link, new_tid, new_attr, new_notes, new_tags))
         conn.commit()
 
 
@@ -159,7 +182,7 @@ def get_decision(nkey: str) -> Optional[dict]:
     with _open() as conn:
         conn.execute(DDL)
         row = conn.execute(
-            "SELECT link_kind, tcgplayer_id, attribute, notes, updated_at "
+            "SELECT link_kind, tcgplayer_id, attribute, notes, tags, updated_at "
             "FROM decisions WHERE natural_key=?",
             (nkey,),
         ).fetchone()
@@ -170,7 +193,8 @@ def get_decision(nkey: str) -> Optional[dict]:
         "tcgplayer_id": row[1],
         "attribute":    row[2],
         "notes":        row[3],
-        "updated_at":   row[4],
+        "tags":         (row[4].split(",") if row[4] else []),
+        "updated_at":   row[5],
     }
 
 
@@ -178,7 +202,7 @@ def all_decisions() -> dict[str, dict]:
     with _open() as conn:
         conn.execute(DDL)
         cur = conn.execute(
-            "SELECT natural_key, link_kind, tcgplayer_id, attribute, notes, updated_at FROM decisions"
+            "SELECT natural_key, link_kind, tcgplayer_id, attribute, notes, tags, updated_at FROM decisions"
         )
         return {
             row[0]: {
@@ -186,7 +210,8 @@ def all_decisions() -> dict[str, dict]:
                 "tcgplayer_id": row[2],
                 "attribute":    row[3],
                 "notes":        row[4],
-                "updated_at":   row[5],
+                "tags":         (row[5].split(",") if row[5] else []),
+                "updated_at":   row[6],
             }
             for row in cur.fetchall()
         }

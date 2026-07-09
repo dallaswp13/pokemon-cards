@@ -95,6 +95,9 @@ def route_row(inv: InventoryRow) -> Route:
 
     if price >= fees.EBAY_AUTHENTICITY_THRESHOLD:
         flags.append("ebay-authenticity-$250+")
+    tcgp_tracking = price > Router.TCGP_TRACKING_THRESHOLD
+    if tcgp_tracking:
+        flags.append("tcgp-tracking-$50+")   # TCGplayer needs tracking → avoid
 
     # Sub-$5 → bulk lots (Workflow D handles these).
     if price < Router.BULK_CEILING_USD:
@@ -106,6 +109,11 @@ def route_row(inv: InventoryRow) -> Route:
         return Route(inv, "eBay (auction)",
                      "scarce/chase — auction realizes above market", e.net, t.net,
                      flags + ["scarce"])
+
+    # $50+ → keep off TCGplayer (tracking requirement) → eBay fixed price.
+    if tcgp_tracking:
+        return Route(inv, "eBay (fixed)", "$50+ — avoid TCGplayer tracking requirement",
+                     e.net, t.net, flags)
 
     # Otherwise: net-best fixed price. Tie → TCGplayer (less friction, existing
     # pipeline, no authentication delay).

@@ -38,6 +38,7 @@
         <button type="button" id="open-link-btn">1. Linking — needs review</button>
         <button type="button" id="open-unmatched-btn" class="secondary">Unmatched</button>
         <button type="button" id="open-sheet-btn" class="secondary">2. Reviewing — matched cards</button>
+        <button type="button" id="open-sell-btn" class="primary">🛒 Sell cockpit</button>
       </div>
     </section>
 
@@ -156,8 +157,53 @@
       <button type="button" id="export-btn">Write outputs</button>
       <pre id="export-result" class="output"></pre>
     </section>
+
+    <!-- Sell Cockpit -->
+    <section id="sell-section" class="card hidden">
+      <div class="review-header">
+        <div>
+          <h2>🛒 Sell Cockpit</h2>
+          <p id="sell-meta" class="meta">Loading…</p>
+        </div>
+        <div class="review-nav">
+          <input type="search" id="sell-search" placeholder="Search name or set…" />
+          <button type="button" id="sell-back-btn" class="secondary">Done</button>
+        </div>
+      </div>
+
+      <div id="sell-filters" class="sell-filters">
+        <div class="filter-row">
+          <span class="filter-label">Channel:</span>
+          <button class="chip" data-filter="channel" data-value="">All</button>
+          <button class="chip" data-filter="channel" data-value="eBay (auction)">eBay auction</button>
+          <button class="chip" data-filter="channel" data-value="eBay (fixed)">eBay fixed</button>
+          <button class="chip" data-filter="channel" data-value="TCGplayer">TCGplayer</button>
+          <button class="chip" data-filter="channel" data-value="Bulk lot">Bulk</button>
+        </div>
+        <div class="filter-row">
+          <span class="filter-label">Price:</span>
+          <button class="chip" data-filter="band" data-value="">All</button>
+          <button class="chip" data-filter="band" data-value="u1">&lt;$1</button>
+          <button class="chip" data-filter="band" data-value="1_5">$1–5</button>
+          <button class="chip" data-filter="band" data-value="5_50">$5–50</button>
+          <button class="chip" data-filter="band" data-value="o50">$50+</button>
+        </div>
+        <div class="filter-row">
+          <span class="filter-label">Show:</span>
+          <button class="chip" data-filter="keep" data-value="">All</button>
+          <button class="chip" data-filter="keep" data-value="keep">★ Keepers</button>
+          <button class="chip" data-filter="keep" data-value="sell">For sale</button>
+          <span class="filter-label" style="margin-left:12px">Tag:</span>
+          <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
+        </div>
+      </div>
+
+      <div id="sell-grid" class="sell-grid"></div>
+      <p id="sell-empty" class="empty-state hidden">No cards match these filters.</p>
+    </section>
   </main>
 
   <script src="app.js"></script>
+  <script src="sell.js"></script>
 </body>
 </html>

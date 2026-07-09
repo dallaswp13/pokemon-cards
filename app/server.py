@@ -350,6 +350,86 @@ def api_matched():
     return jsonify({"rows": rows})
 
 
+def _price_band(price: float) -> str:
+    if price < 1:   return "u1"
+    if price < 5:   return "1_5"
+    if price < 50:  return "5_50"
+    return "o50"
+
+
+@app.route("/api/sell")
+def api_sell():
+    """Enriched rows for the visual Sell Cockpit: route + price band + image + tags."""
+    import channels
+    h = CURRENT_SESSION["hash"]
+    if not h or h not in SESSIONS:
+        return jsonify({"error": "no active session — run a match first"}), 400
+    s = SESSIONS[h]
+    decisions = _decisions_for_session(s)
+
+    rows = []
+    for idx, r in enumerate(s["results"]):
+        inv = r.inventory_row
+        d = decisions.get(idx) or {}
+        # Resolve the tcgplayer_id used for the card image.
+        tid = None
+        if d.get("link_kind") == "confirm" and d.get("tcgplayer_id"):
+            tid = d["tcgplayer_id"]
+        elif r.matched_row is not None:
+            tid = r.matched_row.tcgplayer_id
+
+        route = channels.route_row(inv)
+        attr = d.get("attribute")
+        rows.append({
+            "row_idx":        idx,
+            "natural_key":    _natural_key_for(r),
+            "name":           inv.product_name,
+            "set":            inv.set_name,
+            "number":         inv.card_number,
+            "variance":       inv.variance,
+            "qty":            inv.quantity,
+            "price":          round(inv.market_price, 2),
+            "category":       inv.category,
+            "tcgplayer_id":   tid,
+            "channel":        route.channel,
+            "channel_reason": route.reason,
+            "flags":          route.flags,
+            "band":           _price_band(inv.market_price),
+            "keep":           attr == "personal",
+            "attribute":      attr,
+            "tags":           d.get("tags", []),
+        })
+    # Sort most valuable first — that's the working order.
+    rows.sort(key=lambda x: -x["price"])
+    return jsonify({"rows": rows, "count": len(rows)})
+
+
+@app.route("/api/tag", methods=["POST"])
+def api_tag():
+    """
+    Patch sell-cockpit state for one row.
+    Body: { row_idx, tags?: [str], keep?: bool }
+    """
+    h = CURRENT_SESSION["hash"]
+    if not h or h not in SESSIONS:
+        return jsonify({"error": "no active session"}), 400
+    body = request.get_json(silent=True) or {}
+    row_idx = body.get("row_idx")
+    if row_idx is None or not (0 <= int(row_idx) < len(SESSIONS[h]["results"])):
+        return jsonify({"error": "row_idx required / out of range"}), 400
+
+    nkey = _natural_key_for(SESSIONS[h]["results"][int(row_idx)])
+    kwargs = {}
+    if "tags" in body:
+        kwargs["tags"] = body["tags"]
+    if "keep" in body:
+        kwargs["attribute"] = "personal" if body["keep"] else None
+    if not kwargs:
+        return jsonify({"error": "nothing to update"}), 400
+    session_db.update_decision(nkey, **kwargs)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/decide", methods=["POST"])
 def api_decide():
     """

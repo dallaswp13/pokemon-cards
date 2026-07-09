@@ -125,6 +125,9 @@ class Radar:
 class Router:
     BULK_CEILING_USD = 5.0        # Pokemon singles under this → bulk lots (D)
     EBAY_SCARCE_MIN_USD = 25.0    # only send scarce cards to eBay auction above this
+    # TCGplayer requires uploaded tracking on orders $50+ (cost + effort), so
+    # Dallas doesn't want to sell those there — route $50+ to eBay instead.
+    TCGP_TRACKING_THRESHOLD = 50.0
     # Warm up the eBay account before listing pricey cards: clear the new-seller
     # payout hold with cheap sales first (10+ sales totaling $150+).
     WARMUP_SALES_COUNT = 12
