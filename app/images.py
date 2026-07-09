@@ -220,14 +220,84 @@ def _card_img(c: dict) -> Optional[str]:
     return im.get("small") or im.get("large")
 
 
+_SETS_CACHE = Path(__file__).parent / "state" / "ptcg_sets.json"
+_SETS: Optional[list] = None
+
+
+def _load_ptcg_sets() -> list:
+    """All pokemontcg.io sets (id/name/printedTotal/total), fetched once, cached 7d.
+    One request total — used to CONSTRUCT image URLs instead of searching per card."""
+    global _SETS
+    if _SETS is not None:
+        return _SETS
+    if _SETS_CACHE.exists():
+        try:
+            blob = json.loads(_SETS_CACHE.read_text())
+            if time.time() - blob.get("ts", 0) < 7 * 86400 and blob.get("sets"):
+                _SETS = blob["sets"]
+                return _SETS
+        except Exception:
+            pass
+    data = _http_get_json("https://api.pokemontcg.io/v2/sets?pageSize=250"
+                          "&select=id,name,printedTotal,total,series", timeout=20)
+    _SETS = data.get("data", []) if data else []
+    if _SETS:
+        _SETS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _SETS_CACHE.write_text(json.dumps({"ts": time.time(), "sets": _SETS}))
+    return _SETS
+
+
+# Vintage/ambiguous TCGP set names → exact pokemontcg.io set id. These lack a
+# reliable denominator (e.g. Base Set Charizard is just "#4") and their names
+# collide (Base / Base Set 2), so pin them explicitly to avoid wrong images.
+_SETID_ALIASES = {
+    "base set (unlimited)": "base1", "base set": "base1", "base set (shadowless)": "base1",
+    "jungle": "base2", "fossil": "base3", "base set 2": "base4", "team rocket": "base5",
+    "legendary collection": "base6", "gym heroes": "gym1", "gym challenge": "gym2",
+    "neo genesis": "neo1", "neo discovery": "neo2", "neo revelation": "neo3", "neo destiny": "neo4",
+    "expedition": "ecard1", "aquapolis": "ecard2", "skyridge": "ecard3",
+}
+
+
+def _ptcg_setid(set_name: str, denom: Optional[str]) -> Optional[str]:
+    """Best pokemontcg.io set id for a TCGP set name + card-number denominator."""
+    alias = _SETID_ALIASES.get(set_name.strip().lower())
+    if alias:
+        return alias
+    sets = _load_ptcg_sets()
+    if not sets:
+        return None
+    target = _setwords(set_name)
+    cands = sets
+    if denom:
+        dm = [s for s in sets if denom in (str(s.get("printedTotal")), str(s.get("total")))]
+        if len(dm) == 1:
+            return dm[0].get("id")          # unique printed-total match → confident
+        if dm:
+            cands = dm
+    scored = sorted(((len(target & _setwords(s.get("name", ""))), s) for s in cands),
+                    key=lambda x: -x[0])
+    # Accept only a clear, unambiguous name winner (else fall back / no image).
+    if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return scored[0][1].get("id")
+    return None
+
+
 def _pokemon_image_url(name: str, set_name: str, number: str) -> Optional[str]:
     norm_num = number.split("/")[0].lstrip("0") or "0"
     denom = None
     if "/" in number:
         d = number.split("/")[1].strip().lstrip("0")
         denom = d if d.isdigit() else None
-    # pokemontcg.io's `name` is the bare card name — strip parentheticals like
-    # "(Alternate Full Art)" and any " - 186/196" suffix or the query won't match.
+
+    # Fast path: construct the CDN URL from set id + number — no per-card search
+    # (the search endpoint is slow/throttled). onerror in the UI hides any 404.
+    setid = _ptcg_setid(set_name, denom)
+    if setid:
+        return f"https://images.pokemontcg.io/{setid}/{norm_num}.png"
+
+    # Fallback (rare: promos / trainer-gallery subsets the set map can't pin) —
+    # search by name+number and disambiguate by set/denominator.
     bare = re.sub(r"\s*\([^)]*\)", "", name).split(" - ")[0].strip()
     q = urllib.parse.quote(f'name:"{bare}" number:{norm_num}')
     data = _http_get_json(f"https://api.pokemontcg.io/v2/cards?q={q}&pageSize=25")
@@ -236,9 +306,6 @@ def _pokemon_image_url(name: str, set_name: str, number: str) -> Optional[str]:
         return None
     if len(cards) == 1:
         return _card_img(cards[0])
-
-    # Multiple same-name/same-number cards across sets → disambiguate by the set
-    # (word overlap) and, decisively, the printed set total (the denominator).
     target = _setwords(set_name)
 
     def score(c):
@@ -250,7 +317,7 @@ def _pokemon_image_url(name: str, set_name: str, number: str) -> Optional[str]:
     best = max(cards, key=score)
     denom_hit, overlap = score(best)
     if overlap == 0 and denom_hit == 0:
-        return None   # ambiguous — no image beats the wrong image
+        return None
     return _card_img(best)
 
 
