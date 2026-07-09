@@ -35,26 +35,30 @@ class FixtureSource:
 
 class ApifySource:
     """
-    Run the configured eBay search actor synchronously and return its dataset.
+    Run the configured eBay search actor and normalize to the listing schema.
 
-    Default input matches automation-lab/ebay-scraper's verified schema
-    (keyword-based: searchQueries + sort=ending_soonest + listingType=auction).
-    If you switch to a URL-based actor (e.g. delicious_zebu/…), override
-    `_build_input` to pass `listingUrls: [config.EBAY_SEARCH_URL]` so the exact
-    Pokémon category + ending-soonest sort is preserved. Output field names also
-    vary by actor — `_normalize_apify` is a best-guess mapper; adjust after a
-    successful run reveals the real keys.
+    Default (verified working 2026-07-08): delicious_zebu/ebay-product-listing-
+    scraper — feeds the exact Pokémon category URL via `listingUrls` with
+    `sortBy=1` (ending soonest) + `buyingFormat=LH_Auction`. If the actor name
+    contains "ebay-scraper" we build the keyword-based automation-lab input
+    instead. `_normalize_apify` handles both actors' output shapes.
+
+    Note: the feed is leaky (returns some Yu-Gi-Oh!/MTG despite the Pokémon
+    category URL) and carries no per-item end time — but the ending-soonest sort
+    means page 1 IS the soonest-closing auctions, and non-Pokémon get filtered
+    downstream (no pokemontcg.io comp → rejected, plus an explicit game gate).
     """
 
-    def __init__(self, max_items: int = 60):
-        self.max_items = max_items
+    def __init__(self, max_pages: int = 1):
+        self.max_pages = max_pages
 
     def _build_input(self) -> dict:
-        return {"searchQueries": [config.APIFY_SEARCH_QUERY],
-                "sort": "ending_soonest",
-                "listingType": "auction",
-                "maxProductsPerSearch": self.max_items,
-                "maxSearchPages": 1}
+        if "ebay-scraper" in config.APIFY_SEARCH_ACTOR:      # keyword-based alternate
+            return {"searchQueries": [config.APIFY_SEARCH_QUERY],
+                    "sort": "ending_soonest", "listingType": "auction",
+                    "maxProductsPerSearch": 60, "maxSearchPages": self.max_pages}
+        return {"listingUrls": [config.EBAY_SEARCH_URL], "maxPages": self.max_pages,
+                "sortBy": "1", "buyingFormat": "LH_Auction"}
 
     def fetch(self) -> list[dict]:
         if not config.APIFY_TOKEN:
@@ -104,16 +108,50 @@ def _first(xs):
     return xs[0] if xs else None
 
 
+_GRADED_RE = __import__("re").compile(r"\b(psa|bgs|cgc|sgc)\s*(10|9\.5|9|8|7|6)\b",
+                                      __import__("re").IGNORECASE)
+
+
+def _bids_from_attr(attrs) -> float | None:
+    import re
+    for a in attrs or []:
+        m = re.search(r"(\d+)\s+bids?", str(a), re.IGNORECASE)
+        if m:
+            return float(m.group(1))
+    return None
+
+
 def _normalize_apify(item: dict) -> dict:
-    """Map common Apify eBay-scraper field names to our listing schema."""
-    def g(*keys, default=None):
+    """Map an Apify eBay-scraper item to our listing schema (handles both actors)."""
+    if "product_title" in item:                              # delicious_zebu schema
+        title = item.get("product_title", "") or ""
+        gm = _GRADED_RE.search(title)
+        return {
+            "title": title,
+            "url": item.get("product_url"),
+            "current_bid": _num(item.get("price")),          # auction current bid
+            "shipping": _num(item.get("shipping_cost")) or 0.0,
+            "bid_count": _bids_from_attr(item.get("card_attribute")),
+            "image_url": item.get("image_url"),
+            "condition": item.get("condition", ""),
+            "graded": bool(gm),
+            "grade": (gm.group(0) if gm else None),
+            "is_auction": True,
+            "language": "English",
+            # this actor exposes no seller-feedback %, photo count, or end time →
+            # leave None so those gates safely skip (sort guarantees ending-soonest).
+        }
+
+    def g(*keys, default=None):                              # generic (automation-lab etc.)
         for k in keys:
             if k in item and item[k] not in (None, ""):
                 return item[k]
         return default
+    title = g("title", "name", default="")
+    gm = _GRADED_RE.search(title)
     return {
         "item_id": g("id", "itemId", "epid"),
-        "title": g("title", "name", default=""),
+        "title": title,
         "url": g("url", "itemUrl", "link"),
         "current_bid": _num(g("price", "currentBid", "currentPrice", "bidPrice")),
         "bid_count": _num(g("bids", "bidCount")),
@@ -125,8 +163,8 @@ def _normalize_apify(item: dict) -> dict:
         "seller_feedback_count": _num(g("sellerFeedbackScore", "feedbackScore")),
         "is_auction": True,
         "condition": g("condition", default=""),
-        "graded": bool(g("graded", default=False)),
-        "grade": g("grade"),
+        "graded": bool(g("graded", default=False)) or bool(gm),
+        "grade": g("grade") or (gm.group(0) if gm else None),
         "language": g("language", default="English"),
         "photos_count": _num(g("imageCount", "photosCount")),
     }

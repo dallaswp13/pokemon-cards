@@ -29,6 +29,9 @@ BAD_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 JAPANESE = re.compile(r"(japanese|japan|\bjpn?\b|日本|ポケモン)", re.IGNORECASE)
+# The auction feed leaks other TCGs — reject clear non-Pokémon before scoring.
+OTHER_GAME = re.compile(r"(yu-?gi-?oh|yugioh|konami|\bmtg\b|magic the gathering|"
+                        r"\bjotl\b|-en\d{3}|lorcana|one piece card)", re.IGNORECASE)
 
 _COND_ALIASES = {
     "near mint": "NM", "nm": "NM", "mint": "NM", "lightly played": "LP", "lp": "LP",
@@ -71,6 +74,8 @@ def score_listing(listing: dict, reference: float | None, mode: str = "flip",
         fails.append("not an auction")
     if JAPANESE.search(title) or str(listing.get("language", "English")).lower().startswith("ja"):
         fails.append("Japanese (English-only radar)")
+    if OTHER_GAME.search(title):
+        fails.append("not Pokémon (other TCG in feed)")
     if BAD_KEYWORDS.search(title):
         fails.append("suspect keyword in title (lot/proxy/damaged/…)")
     ml = listing.get("minutes_left")

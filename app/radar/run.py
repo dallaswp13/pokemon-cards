@@ -25,11 +25,19 @@ def run_radar(source: str = "fixture", mode: str = "both", fixture: str = "",
     date_str = date_str or date.today().strftime("%Y%m%d")
     listings = sources.get_source(source, fixture).fetch()
 
+    # Prefilter on cheap title/auction gates BEFORE any network comp lookup —
+    # the feed leaks non-Pokémon/junk, and a comp call per listing is the slow
+    # part. Only fetch a reference for listings that clear the free gates.
     scored = []
+    probe_mode = "flip" if mode == "both" else mode
     for lst in listings:
+        dry = score.score_listing(lst, None, probe_mode)
+        other_fails = [f for f in dry.gate_failures if "no reference price" not in f]
+        if other_fails:
+            scored.append((lst, dry))               # rejected on gates; skip the network
+            continue
         M, conf = comps.get_reference(lst)
-        s = score.best_score(lst, M, mode, conf)
-        scored.append((lst, s))
+        scored.append((lst, score.best_score(lst, M, mode, conf)))
 
     flagged = [(l, s) for l, s in scored if s.flag]
     # Sort best deals first (lowest all-in / reference).
