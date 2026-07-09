@@ -36,18 +36,25 @@ class FixtureSource:
 class ApifySource:
     """
     Run the configured eBay search actor synchronously and return its dataset.
-    Feed the ending-soonest URL via directUrls. Input keys vary by actor — tune
-    `_build_input` to the actor you use (defaults match scrapeworks-style).
+
+    Default input matches automation-lab/ebay-scraper's verified schema
+    (keyword-based: searchQueries + sort=ending_soonest + listingType=auction).
+    If you switch to a URL-based actor (e.g. delicious_zebu/…), override
+    `_build_input` to pass `listingUrls: [config.EBAY_SEARCH_URL]` so the exact
+    Pokémon category + ending-soonest sort is preserved. Output field names also
+    vary by actor — `_normalize_apify` is a best-guess mapper; adjust after a
+    successful run reveals the real keys.
     """
 
-    def __init__(self, search_url: str = None, max_items: int = 60):
-        self.search_url = search_url or config.EBAY_SEARCH_URL
+    def __init__(self, max_items: int = 60):
         self.max_items = max_items
 
     def _build_input(self) -> dict:
-        return {"startUrls": [{"url": self.search_url}],
-                "directUrls": [self.search_url],
-                "maxItems": self.max_items}
+        return {"searchQueries": [config.APIFY_SEARCH_QUERY],
+                "sort": "ending_soonest",
+                "listingType": "auction",
+                "maxProductsPerSearch": self.max_items,
+                "maxSearchPages": 1}
 
     def fetch(self) -> list[dict]:
         if not config.APIFY_TOKEN:

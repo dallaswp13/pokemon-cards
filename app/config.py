@@ -57,8 +57,15 @@ POKEMONTCG_API_KEY = _get("POKEMONTCG_API_KEY")
 PRICECHARTING_TOKEN = _get("PRICECHARTING_TOKEN")
 
 # Apify — eBay auction firehose (search scraper) + sold-comps actor.
+# NOTE: actor availability/output varies. In live testing (2026-07-08),
+# automation-lab/ebay-scraper accepted the right params (sort=ending_soonest,
+# listingType=auction) but returned 0 items — scraper reliability is real, so
+# VERIFY your chosen actor with a small run before trusting the feed. Alternates:
+# delicious_zebu/ebay-product-listing-scraper (takes listingUrls → your exact
+# category URL) and xtracto/ebay-sold-comps-scraper (comps with median/p90).
 APIFY_TOKEN = _get("APIFY_TOKEN")
-APIFY_SEARCH_ACTOR = _get("APIFY_SEARCH_ACTOR", "scrapeworks/ebay-search-scraper")
+APIFY_SEARCH_ACTOR = _get("APIFY_SEARCH_ACTOR", "automation-lab/ebay-scraper")
+APIFY_SEARCH_QUERY = _get("APIFY_SEARCH_QUERY", "pokemon card")   # this actor is keyword-based
 APIFY_SOLD_ACTOR = _get("APIFY_SOLD_ACTOR", "automation-lab/ebay-sold-scraper")
 
 # eBay Browse API (optional) — free per-card watchlist polling once approved.
