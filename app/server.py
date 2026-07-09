@@ -12,7 +12,8 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, redirect, request, send_from_directory
+from flask import (Flask, Response, jsonify, redirect, request,
+                   send_file, send_from_directory)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from matcher import run_match, MatchResult, TcgpRow, load_tcgp  # noqa: E402
@@ -24,6 +25,11 @@ ROOT      = Path(__file__).parent.parent
 INPUTS    = ROOT / "inputs"
 OUTPUTS   = ROOT / "outputs"
 STATIC    = Path(__file__).parent / "static"
+PHOTOS    = Path(__file__).parent / "state" / "photos"   # user front/back card photos
+
+
+def _photo_path(nkey: str, side: str) -> Path:
+    return PHOTOS / nkey / f"{side}.jpg"
 
 POKE_PATH = INPUTS / "TCGplayer_pokemon.csv"
 MTG_PATH  = INPUTS / "TCGplayer_mtg.csv"
@@ -371,9 +377,10 @@ def api_sell():
 
         route = channels.route_row(inv)
         attr = d.get("attribute")
+        nkey = _natural_key_for(r)
         rows.append({
             "row_idx":        idx,
-            "natural_key":    _natural_key_for(r),
+            "natural_key":    nkey,
             "name":           inv.product_name,
             "set":            inv.set_name,
             "number":         inv.card_number,
@@ -398,6 +405,12 @@ def api_sell():
             "keep":           attr == "personal",
             "attribute":      attr,
             "tags":           d.get("tags", []),
+            "status":         d.get("status"),
+            "sale_price":     d.get("sale_price"),
+            "listed_at":      d.get("listed_at"),
+            "sold_at":        d.get("sold_at"),
+            "has_front":      _photo_path(nkey, "front").exists(),
+            "has_back":       _photo_path(nkey, "back").exists(),
         })
     rows.sort(key=lambda x: -x["price"])   # most valuable first (default working order)
     return jsonify({"rows": rows, "count": len(rows), "summary": _sell_summary(rows)})
@@ -422,6 +435,12 @@ def _sell_summary(rows: list[dict]) -> dict:
     grade_cands = [r for r in sellable if r["grade_flag"]]
     keepers = [r for r in rows if r["keep"]]
     consign = [r for r in sellable if r["price"] >= 2000]   # config.Grading.CONSIGN_FLOOR_GRADED
+
+    # Ledger — actuals as you sell down.
+    sold = [r for r in rows if r.get("status") == "sold"]
+    listed = [r for r in rows if r.get("status") == "listed"]
+    realized = round(sum((r.get("sale_price") or 0) for r in sold), 2)
+    market_sold = round(sum(r["price"] * r["qty"] for r in sold), 2)
     return {
         "market": mkt, "net": net, "pct": pct,
         "pct_excl_bulk": nbp, "net_excl_bulk": nbn, "market_excl_bulk": nbm,
@@ -432,6 +451,12 @@ def _sell_summary(rows: list[dict]) -> dict:
         "keepers": len(keepers),
         "keepers_value": round(sum(r["price"] * r["qty"] for r in keepers), 2),
         "count_sellable": len(sellable),
+        "listed": len(listed),
+        "sold": len(sold),
+        "realized": realized,
+        "market_sold": market_sold,
+        "realized_pct": round(realized / market_sold, 3) if market_sold else 0,
+        "unlisted_sellable": sum(1 for r in sellable if not r.get("status")),
     }
 
 
@@ -458,6 +483,78 @@ def api_tag():
     if not kwargs:
         return jsonify({"error": "nothing to update"}), 400
     session_db.update_decision(nkey, **kwargs)
+    return jsonify({"ok": True})
+
+
+def _row_nkey(row_idx):
+    h = CURRENT_SESSION["hash"]
+    if not h or h not in SESSIONS:
+        return None, (jsonify({"error": "no active session"}), 400)
+    if row_idx is None or not (0 <= int(row_idx) < len(SESSIONS[h]["results"])):
+        return None, (jsonify({"error": "row_idx required / out of range"}), 400)
+    return _natural_key_for(SESSIONS[h]["results"][int(row_idx)]), None
+
+
+@app.route("/api/status", methods=["POST"])
+def api_status():
+    """Ledger: mark a card listed/sold and record a sale price.
+    Body: { row_idx, status?: 'listed'|'sold'|null, sale_price?: number }"""
+    body = request.get_json(silent=True) or {}
+    nkey, err = _row_nkey(body.get("row_idx"))
+    if err:
+        return err
+    kwargs = {}
+    if "status" in body:
+        kwargs["status"] = body["status"] or None
+    if "sale_price" in body:
+        try:
+            kwargs["sale_price"] = float(body["sale_price"]) if body["sale_price"] not in (None, "") else None
+        except (ValueError, TypeError):
+            kwargs["sale_price"] = None
+    try:
+        session_db.update_listing(nkey, **kwargs)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/photo", methods=["POST"])
+def api_photo():
+    """Upload a front/back photo for a card. multipart: row_idx, side, photo(file)."""
+    side = request.form.get("side")
+    if side not in ("front", "back"):
+        return jsonify({"error": "side must be 'front' or 'back'"}), 400
+    try:
+        row_idx = int(request.form.get("row_idx"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "row_idx required"}), 400
+    nkey, err = _row_nkey(row_idx)
+    if err:
+        return err
+    f = request.files.get("photo")
+    if not f:
+        return jsonify({"error": "no photo file"}), 400
+    p = _photo_path(nkey, side)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    f.save(str(p))
+    return jsonify({"ok": True, "side": side})
+
+
+@app.route("/api/photo/<nkey>/<side>", methods=["GET"])
+def api_get_photo(nkey: str, side: str):
+    if side not in ("front", "back"):
+        return Response("bad side", status=404)
+    p = _photo_path(nkey, side)
+    if not p.exists():
+        return Response("no photo", status=404)
+    return send_file(str(p), mimetype="image/jpeg")
+
+
+@app.route("/api/photo/<nkey>/<side>", methods=["DELETE"])
+def api_delete_photo(nkey: str, side: str):
+    p = _photo_path(nkey, side)
+    if p.exists():
+        p.unlink()
     return jsonify({"ok": True})
 
 

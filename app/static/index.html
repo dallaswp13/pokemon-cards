@@ -216,10 +216,24 @@
           <span class="filter-label" style="margin-left:12px">Tag:</span>
           <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
         </div>
+        <div class="filter-row">
+          <span class="filter-label">Status:</span>
+          <button class="chip" data-filter="status" data-value="">All</button>
+          <button class="chip" data-filter="status" data-value="unlisted">Unlisted</button>
+          <button class="chip" data-filter="status" data-value="listed">📋 Listed</button>
+          <button class="chip" data-filter="status" data-value="sold">✅ Sold</button>
+          <button class="chip" data-filter="status" data-value="photos">📷 Has photos</button>
+        </div>
       </div>
 
       <div id="sell-grid" class="sell-grid"></div>
       <p id="sell-empty" class="empty-state hidden">No cards match these filters.</p>
+
+      <!-- Card detail modal: photos + list/sold + keep/tags -->
+      <div id="card-modal" class="modal hidden">
+        <div class="modal-backdrop" id="modal-backdrop"></div>
+        <div class="modal-panel" id="modal-panel"></div>
+      </div>
     </section>
   </main>
 

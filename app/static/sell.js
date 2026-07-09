@@ -18,7 +18,8 @@
 
   let rows = [];
   let summary = null;
-  const filters = { channel: "", band: "", keep: "", grade: "", tag: "", search: "" };
+  const filters = { channel: "", band: "", keep: "", grade: "", tag: "", search: "", status: "" };
+  let modalKey = null;   // natural_key of the card open in the detail modal
   let sortKey = "value";
   let viewMode = localStorage.getItem("sellViewMode") || "grid";   // 'grid' | 'list'
 
@@ -88,6 +89,11 @@
         <span class="sum-note grade">◆ ${s.grade_candidates} grade-first (~+${money(s.grade_extra)})</span>
         <span class="sum-note">consignment: ${s.consign_eligible} eligible</span>
         <span class="sum-note">★ ${s.keepers} keepers (${money(s.keepers_value)})</span>
+      </div>
+      <div class="sum-ledger">
+        <span class="led sold">✅ ${s.sold} sold · ${money(s.realized)} realized${s.market_sold ? ` (${Math.round(s.realized_pct * 100)}% of their market)` : ""}</span>
+        <span class="led">📋 ${s.listed} listed</span>
+        <span class="led dim">${s.unlisted_sellable} still to list</span>
       </div>`;
   }
 
@@ -97,6 +103,10 @@
     if (filters.keep === "keep" && !row.keep) return false;
     if (filters.keep === "sell" && row.keep) return false;
     if (filters.grade === "grade" && !row.grade_flag) return false;
+    if (filters.status === "unlisted" && row.status) return false;
+    if (filters.status === "listed" && row.status !== "listed") return false;
+    if (filters.status === "sold" && row.status !== "sold") return false;
+    if (filters.status === "photos" && !(row.has_front || row.has_back)) return false;
     if (filters.tag && !(row.tags || []).some((x) => x.includes(filters.tag.toLowerCase()))) return false;
     if (filters.search) {
       const q = filters.search.toLowerCase();
@@ -142,9 +152,14 @@
       ? `<span class="flag grade" title="${esc(row.grade_reason)}">◆ grade +${money(row.grade_gap)}</span>` : "";
     const tags = (row.tags || []).map((t) =>
       `<span class="tag">${esc(t)}<button class="tag-x" data-act="untag" data-tag="${esc(t)}">×</button></span>`).join("");
+    const badges =
+      (row.status === "sold" ? '<span class="tb sold" title="Sold">✅</span>'
+        : row.status === "listed" ? '<span class="tb listed" title="Listed">📋</span>' : "") +
+      ((row.has_front || row.has_back) ? '<span class="tb cam" title="Has photos">📷</span>' : "");
     el.innerHTML = `
       <div class="tile-img">${img}
         <button class="keep-star" data-act="keep" title="Keep for personal collection">${row.keep ? "★" : "☆"}</button>
+        <div class="tile-badges">${badges}</div>
       </div>
       <div class="tile-body">
         <div class="tile-name" title="${esc(row.name)}">${esc(row.name)}</div>
@@ -170,7 +185,7 @@
 
   async function onClick(ev, row, el) {
     const act = ev.target.dataset && ev.target.dataset.act;
-    if (!act) return;
+    if (!act) { openCard(row); return; }   // click the tile (not a button) → detail modal
     ev.stopPropagation();
     if (act === "keep") {
       row.keep = !row.keep;
@@ -199,6 +214,8 @@
     const matcher = $("#sell-matcher-btn"); if (matcher) matcher.addEventListener("click", showMatcher);
     const vg = $("#view-grid"); if (vg) vg.addEventListener("click", () => setView("grid"));
     const vl = $("#view-list"); if (vl) vl.addEventListener("click", () => setView("list"));
+    const bd = $("#modal-backdrop"); if (bd) bd.addEventListener("click", closeCard);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCard(); });
     document.querySelectorAll("#sell-filters .chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         const f = btn.dataset.filter, v = btn.dataset.value;
@@ -222,6 +239,114 @@
     const g = $("#view-grid"), l = $("#view-list");
     if (g) g.classList.toggle("active", viewMode === "grid");
     if (l) l.classList.toggle("active", viewMode === "list");
+  }
+
+  // ── Card detail modal: photos + list/sold + keep/tags ──────────────────
+  function closeCard() { modalKey = null; $("#card-modal").classList.add("hidden"); }
+
+  function photoSlot(row, side) {
+    const has = side === "front" ? row.has_front : row.has_back;
+    const src = has ? `/api/photo/${row.natural_key}/${side}?t=${Date.now()}` : "";
+    return `<div class="photo-slot">
+        <label class="ps-drop">
+          ${has ? `<img src="${src}">` : `<span class="ps-hint">＋ ${side}</span>`}
+          <input type="file" accept="image/*" capture="environment" data-side="${side}" hidden>
+        </label>
+        <div class="ps-row"><span>${side}</span>${has ? `<button class="linkbtn" data-mact="delphoto" data-side="${side}">remove</button>` : ""}</div>
+      </div>`;
+  }
+
+  function openCard(row) {
+    modalKey = row.natural_key;
+    const img = row.tcgplayer_id ? `<img src="/api/image/${row.tcgplayer_id}">` : `<div class="noimg">no image</div>`;
+    const grade = row.grade_flag ? `<div class="m-grade">◆ Grade-first — ${esc(row.grade_reason)}</div>` : "";
+    const tags = (row.tags || []).map((t) => `<span class="tag">${esc(t)}<button class="tag-x" data-mact="untag" data-tag="${esc(t)}">×</button></span>`).join("");
+    $("#modal-panel").innerHTML = `
+      <button class="modal-close" data-mact="close">×</button>
+      <div class="modal-grid">
+        <div class="modal-art">${img}</div>
+        <div class="modal-info">
+          <h3>${esc(row.name)}</h3>
+          <p class="dim">${esc(row.set)} · #${esc(row.number) || "—"}${row.variance ? " · " + esc(row.variance) : ""}</p>
+          <div class="m-stats">
+            <span class="price">$${row.price.toFixed(2)}</span>
+            <span class="badge ${CHANNEL_CLASS[row.channel] || ""}">${esc(row.channel)}</span>
+            <span class="m-net">net $${row.net_unit.toFixed(0)} · <b>${Math.round(row.net_pct * 100)}%</b></span>
+          </div>
+          ${grade}
+          <div class="m-row">
+            <button class="m-btn ${row.keep ? "on" : ""}" data-mact="keep">${row.keep ? "★ Keeper" : "☆ Keep"}</button>
+            <button class="m-btn" data-mact="addtag">+ tag</button>
+            <span class="m-tags">${tags}</span>
+          </div>
+          <div class="m-row m-status">
+            <span class="filter-label">Status</span>
+            <button class="m-btn ${row.status === "listed" ? "on" : ""}" data-mact="listed">📋 Listed</button>
+            <button class="m-btn ${row.status === "sold" ? "on" : ""}" data-mact="sold">✅ Sold</button>
+            <input type="number" step="0.01" id="m-price" class="m-price" placeholder="sale $" value="${row.sale_price != null ? row.sale_price : ""}">
+            ${row.status ? `<button class="m-btn ghost" data-mact="unlist">clear</button>` : ""}
+          </div>
+          <div class="m-photos">
+            <div class="filter-label">Photos for eBay</div>
+            <div class="ps-wrap">${photoSlot(row, "front")}${photoSlot(row, "back")}</div>
+          </div>
+        </div>
+      </div>`;
+    const panel = $("#modal-panel");
+    panel.onclick = (ev) => onModalClick(ev, row);
+    panel.querySelectorAll("input[type=file]").forEach((inp) =>
+      inp.addEventListener("change", () => { if (inp.files[0]) uploadPhoto(row, inp.dataset.side, inp.files[0]); }));
+    $("#card-modal").classList.remove("hidden");
+  }
+
+  async function refreshReopen(nkey) {
+    await load();
+    const r = rows.find((x) => x.natural_key === nkey);
+    if (r) openCard(r); else closeCard();
+  }
+
+  async function statusPatch(row, body) {
+    try {
+      await fetch("/api/status", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row_idx: row.row_idx, ...body }) });
+    } catch (e) { /* ignore */ }
+  }
+
+  async function uploadPhoto(row, side, file) {
+    const fd = new FormData();
+    fd.append("photo", file); fd.append("side", side); fd.append("row_idx", row.row_idx);
+    try {
+      const r = await fetch("/api/photo", { method: "POST", body: fd });
+      if (r.ok) { if (side === "front") row.has_front = true; else row.has_back = true; openCard(row); render(); }
+    } catch (e) { /* ignore */ }
+  }
+
+  async function onModalClick(ev, row) {
+    const act = ev.target.dataset && ev.target.dataset.mact;
+    if (!act) return;
+    ev.stopPropagation();
+    if (act === "close") { closeCard(); return; }
+    if (act === "keep") {
+      await patch(row, { keep: !row.keep }); await refreshReopen(row.natural_key);
+    } else if (act === "addtag") {
+      const t = prompt("Add tag:");
+      if (t && t.trim()) { const tg = Array.from(new Set([...(row.tags || []), t.trim().toLowerCase()])); await patch(row, { tags: tg }); await refreshReopen(row.natural_key); }
+    } else if (act === "untag") {
+      const tg = (row.tags || []).filter((x) => x !== ev.target.dataset.tag);
+      await patch(row, { tags: tg }); await refreshReopen(row.natural_key);
+    } else if (act === "listed" || act === "sold") {
+      const body = { status: row.status === act ? null : act };
+      const priceEl = $("#m-price");
+      if (act === "sold" && priceEl && priceEl.value) body.sale_price = priceEl.value;
+      await statusPatch(row, body); await refreshReopen(row.natural_key);
+    } else if (act === "unlist") {
+      await statusPatch(row, { status: null }); await refreshReopen(row.natural_key);
+    } else if (act === "delphoto") {
+      const side = ev.target.dataset.side;
+      try { await fetch(`/api/photo/${row.natural_key}/${side}`, { method: "DELETE" }); } catch (e) {}
+      if (side === "front") row.has_front = false; else row.has_back = false;
+      openCard(row); render();
+    }
   }
 
   wire();
