@@ -36,8 +36,19 @@
     $("#sell-meta").textContent = "Loading…";
     let d;
     try {
-      const r = await fetch("/api/sell");
-      if (!r.ok) { $("#sell-meta").textContent = "Run a match first (upload an export)."; return; }
+      let r = await fetch("/api/sell");
+      if (r.status === 400) {
+        // No match session yet — run one against inputs/export.csv, then retry.
+        $("#sell-meta").textContent = "Preparing your inventory (matching export)…";
+        const m = await fetch("/api/match", { method: "POST" });
+        if (!m.ok) {
+          const err = await m.json().catch(() => ({}));
+          $("#sell-meta").textContent = "Couldn't match: " + (err.error || "is inputs/export.csv present?");
+          return;
+        }
+        r = await fetch("/api/sell");
+      }
+      if (!r.ok) { $("#sell-meta").textContent = "Error loading."; return; }
       d = await r.json();
     } catch (e) { $("#sell-meta").textContent = "Error loading."; return; }
     rows = d.rows || [];
@@ -170,7 +181,9 @@
   }
 
   function wire() {
-    const open = $("#open-sell-btn"); if (open) open.addEventListener("click", openSell);
+    ["#open-sell-btn", "#open-sell-btn-landing"].forEach((sel) => {
+      const b = $(sel); if (b) b.addEventListener("click", openSell);
+    });
     const back = $("#sell-back-btn"); if (back) back.addEventListener("click", backToSummary);
     document.querySelectorAll("#sell-filters .chip").forEach((btn) => {
       btn.addEventListener("click", () => {

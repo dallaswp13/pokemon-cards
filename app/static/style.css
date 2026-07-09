@@ -476,3 +476,8 @@ input[type="search"] {
 .tile-net { font-size:12px; color:var(--text-dim); }
 .tile-net b { color:var(--success); }
 .tile-flags .flag.grade { color:#c084fc; border-color:#7c3aed; font-weight:600; }
+
+/* Landing CTA into the Sell Cockpit */
+.sell-cta { margin-top:16px; padding-top:16px; border-top:1px solid var(--border); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.sell-cta .dim { color:var(--text-dim); font-size:13px; }
+#open-sell-btn-landing { font-size:15px; padding:10px 18px; }
