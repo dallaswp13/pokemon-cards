@@ -256,6 +256,13 @@ _SETID_ALIASES = {
     "legendary collection": "base6", "gym heroes": "gym1", "gym challenge": "gym2",
     "neo genesis": "neo1", "neo discovery": "neo2", "neo revelation": "neo3", "neo destiny": "neo4",
     "expedition": "ecard1", "aquapolis": "ecard2", "skyridge": "ecard3",
+    # Trainer / Galarian Gallery subsets (numbers like TG05 / GG44 — pinned).
+    "brilliant stars trainer gallery": "swsh9tg",
+    "astral radiance trainer gallery": "swsh10tg",
+    "lost origin trainer gallery": "swsh11tg",
+    "silver tempest trainer gallery": "swsh12tg",
+    "crown zenith: galarian gallery": "swsh12pt5gg",
+    "crown zenith galarian gallery": "swsh12pt5gg",
 }
 
 
@@ -321,12 +328,27 @@ def _pokemon_image_url(name: str, set_name: str, number: str) -> Optional[str]:
     return _card_img(best)
 
 
+_SCRY_LOCK = threading.Lock()
+_scry_last = [0.0]
+
+
+def _scryfall_get(url: str) -> Optional[dict]:
+    # Scryfall asks for ~10 req/s max — serialize to ~8/s so the prewarm pool
+    # doesn't get 429'd (which was leaving MTG cards imageless).
+    with _SCRY_LOCK:
+        dt = time.time() - _scry_last[0]
+        if dt < 0.12:
+            time.sleep(0.12 - dt)
+        _scry_last[0] = time.time()
+    return _http_get_json(url)
+
+
 def _scryfall_image_url(tid: str, name: str, set_name: str) -> Optional[str]:
-    data = _http_get_json(f"https://api.scryfall.com/cards/tcgplayer/{tid}")
+    data = _scryfall_get(f"https://api.scryfall.com/cards/tcgplayer/{tid}")
     if data and data.get("image_uris", {}).get("normal"):
         return data["image_uris"]["normal"]
     q = urllib.parse.quote(f'!"{name}" set:"{set_name}"')
-    data = _http_get_json(f"https://api.scryfall.com/cards/search?q={q}&unique=cards")
+    data = _scryfall_get(f"https://api.scryfall.com/cards/search?q={q}&unique=cards")
     if data and data.get("data"):
         return data["data"][0].get("image_uris", {}).get("normal")
     return None
