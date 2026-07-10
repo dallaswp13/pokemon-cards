@@ -1,6 +1,7 @@
 /* Sell Cockpit (cloud) — Supabase-backed viewer/tagger. Data syncs up from the
    local tool (`sell.py push`); tags/conditions edited here flow back on `pull`. */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildRows } from "./engine.js";
 
 const SUPABASE_URL = "https://xmcohwtftpmnanootpia.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY29od3RmdHBtbmFub290cGlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODU5NTcsImV4cCI6MjA5OTI2MTk1N30.YVOa8JBdaJH9aXXsyUjOhdwKiohj4SZ6rVia36KfP0k";
@@ -277,7 +278,53 @@ function openCard(r) {
   $("#card-modal").classList.remove("hidden");
 }
 
+// ── Import CSV (fully in-browser: parse → route → store) ───────────────────
+async function importCsv(file) {
+  const status = (m) => { $("#sell-meta").textContent = m; };
+  try {
+    status("Reading file…");
+    const text = await file.text();
+    const { data: { user } } = await sb.auth.getUser();
+    if (!user) { status("Sign in first."); return; }
+
+    // Carry tags/condition/keep forward from existing rows (sync semantics:
+    // the upload replaces the list; your custom fields persist by card).
+    status("Loading existing tags…");
+    const existing = {};
+    for (let from = 0; from < 20000; from += 1000) {
+      const { data, error } = await sb.from("cards")
+        .select("natural_key,tags,condition,keep").range(from, from + 999);
+      if (error) break;
+      (data || []).forEach((r) => { existing[r.natural_key] = r; });
+      if (!data || data.length < 1000) break;
+    }
+
+    const cards = await buildRows(text, existing, status);
+    if (!cards.length) { status("No cards found — is this a Collectr export.csv?"); return; }
+    cards.forEach((c) => { c.user_id = user.id; });
+
+    status("Replacing your inventory…");
+    const del = await sb.from("cards").delete().eq("user_id", user.id);
+    if (del.error) { status("Import failed: " + del.error.message); return; }
+    for (let i = 0; i < cards.length; i += 500) {
+      status(`Uploading ${Math.min(i + 500, cards.length)}/${cards.length}…`);
+      const ins = await sb.from("cards").insert(cards.slice(i, i + 500));
+      if (ins.error) { status("Import failed at " + i + ": " + ins.error.message); return; }
+    }
+    status("Imported " + cards.length + " cards ✓");
+    load();
+  } catch (e) {
+    status("Import failed: " + (e.message || e));
+  }
+}
+
 // ── Wiring ──────────────────────────────────────────────────────────────────
+$("#import-btn").addEventListener("click", () => $("#import-file").click());
+$("#import-file").addEventListener("change", () => {
+  const f = $("#import-file").files[0];
+  if (f) importCsv(f);
+  $("#import-file").value = "";
+});
 $("#signin-btn").addEventListener("click", signIn);
 $("#signup-btn").addEventListener("click", signUp);
 $("#auth-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(); });

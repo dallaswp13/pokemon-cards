@@ -47,6 +47,8 @@
             </select>
           </label>
           <input type="search" id="sell-search" placeholder="Search name or set…" />
+          <button type="button" id="import-btn" class="primary">📤 Import CSV</button>
+          <input type="file" id="import-file" accept=".csv" hidden />
           <button type="button" id="signout-btn" class="secondary">Sign out</button>
         </div>
       </div>
@@ -78,7 +80,7 @@
       </div>
 
       <div id="sell-grid" class="sell-grid"></div>
-      <p id="sell-empty" class="empty-state hidden">No cards. Run <code>python3 app/sell.py push</code> from the local tool to sync your inventory.</p>
+      <p id="sell-empty" class="empty-state hidden">No cards yet — hit <b>📤 Import CSV</b> and pick your Collectr export to load your inventory.</p>
 
       <div id="card-modal" class="modal hidden">
         <div class="modal-backdrop" id="modal-backdrop"></div>
