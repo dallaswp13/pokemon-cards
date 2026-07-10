@@ -178,13 +178,16 @@
           <label class="filter-label">Sort
             <select id="sell-sort">
               <option value="value">Value</option>
+              <option value="psa10x">PSA-10 ×</option>
               <option value="netpct">Net %</option>
               <option value="sellnow">Sell-now priority</option>
               <option value="gradegap">Grade upside</option>
             </select>
           </label>
           <input type="search" id="sell-search" placeholder="Search name or set…" />
-          <button type="button" id="holds-btn" class="secondary">💎 Holds</button>
+          <button type="button" id="prices-btn" class="primary">💲 Update prices</button>
+          <button type="button" id="import-btn" class="secondary">📤 Import CSV</button>
+          <input type="file" id="import-file" accept=".csv" hidden />
           <button type="button" id="manifest-btn" class="secondary">🏪 Drop-off</button>
           <button type="button" id="sell-matcher-btn" class="secondary">🔧 Matcher</button>
         </div>
@@ -192,13 +195,15 @@
 
       <div id="sell-summary" class="sell-summary"></div>
 
+      <div id="sell-tabs" class="sell-tabs"></div>
+
       <div id="sell-filters" class="sell-filters">
         <select id="f-channel" class="f-sel" title="Channel">
           <option value="">All channels</option>
           <option value="eBay (auction)">eBay auction</option>
           <option value="eBay (fixed)">eBay fixed</option>
           <option value="TCGplayer">TCGplayer</option>
-          <option value="Bulk lot">Bulk</option>
+          <option value="LCS">LCS (shop)</option>
         </select>
         <select id="f-band" class="f-sel" title="Price band">
           <option value="">All prices</option>
@@ -207,16 +212,12 @@
           <option value="1_5">$1–5</option>
           <option value="u1">&lt;$1</option>
         </select>
-        <select id="f-status" class="f-sel" title="Status">
-          <option value="">Any status</option>
-          <option value="unlisted">Unlisted</option>
-          <option value="listed">Listed</option>
-          <option value="sold">Sold</option>
-        </select>
+        <button class="chip" data-filter="notnm" data-value="notnm">🔍 Not NM <span id="notnm-count"></span></button>
         <button class="chip" data-filter="grade" data-value="grade">◆ Grade</button>
-        <button class="chip" data-filter="oc" data-value="oc">◎ Off-center</button>
-        <button class="chip" data-filter="photos" data-value="photos">📷 Photos</button>
-        <button class="chip" data-filter="shop" data-value="shop">🏪 Drop-off</button>
+        <button class="chip" data-filter="oc" data-value="oc">◎ OC</button>
+        <button class="chip" data-filter="shop" data-value="shop">🏪</button>
+        <button class="chip" data-filter="keepers" data-value="keepers">★</button>
+        <button class="chip" data-filter="photos" data-value="photos">📷</button>
         <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
       </div>
 
@@ -230,19 +231,6 @@
       </div>
     </section>
 
-    <!-- Holds: graded + sealed (long-term keepers) -->
-    <section id="holds-section" class="card hidden">
-      <div class="review-header">
-        <div>
-          <h2>💎 Holds — graded &amp; sealed</h2>
-          <p id="holds-meta" class="meta">Long-term keepers — never routed for sale.</p>
-        </div>
-        <div class="review-nav">
-          <button type="button" id="holds-back-btn" class="secondary">← Back to cockpit</button>
-        </div>
-      </div>
-      <div id="holds-grid" class="sell-grid"></div>
-    </section>
   </main>
 
   <script src="app.js"></script>

@@ -194,6 +194,19 @@ def clear_decision(nkey: str) -> None:
         conn.commit()
 
 
+def prune_missing(current_keys: set) -> int:
+    """Delete decisions for cards no longer in the newest export (import = sync).
+    Tags/conditions on cards still present are untouched."""
+    with _open() as conn:
+        conn.execute(DDL)
+        existing = {row[0] for row in conn.execute("SELECT natural_key FROM decisions")}
+        stale = existing - set(current_keys)
+        for k in stale:
+            conn.execute("DELETE FROM decisions WHERE natural_key=?", (k,))
+        conn.commit()
+    return len(stale)
+
+
 def update_condition(nkey: str, condition) -> None:
     """Set a card's condition (NM/LP/MP/HP/DMG), or None to reset to default (NM)."""
     if condition not in (None, *CONDITION_KINDS):

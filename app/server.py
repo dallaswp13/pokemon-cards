@@ -7,6 +7,7 @@ The review UI / session persistence are added in later steps.
 """
 
 import hashlib
+import json
 import sys
 import time
 from dataclasses import asdict
@@ -16,7 +17,8 @@ from flask import (Flask, Response, jsonify, redirect, request,
                    send_file, send_from_directory)
 
 sys.path.insert(0, str(Path(__file__).parent))
-from matcher import run_match, MatchResult, TcgpRow, load_tcgp  # noqa: E402
+from matcher import (run_match, MatchResult, TcgpRow, load_tcgp, load_export,  # noqa: E402
+                     InventoryRow, SEALED_KEYWORDS, SEALED_BRACKET_PATTERN)
 from output import export_outputs                               # noqa: E402
 import images as images_mod                                     # noqa: E402
 import session as session_db                                    # noqa: E402
@@ -107,12 +109,78 @@ def _decisions_for_session(s: dict) -> dict[int, dict]:
 
 
 def _natural_key_for(r: MatchResult) -> str:
-    inv = r.inventory_row
+    return _nkey_inv(r.inventory_row)
+
+
+def _nkey_inv(inv: InventoryRow) -> str:
     return session_db.natural_key(
         category=inv.category, set_name=inv.set_name,
         card_number=inv.card_number, variance=inv.variance,
         product_name=inv.product_name,
     )
+
+
+def _inv_from_raw(row: dict) -> InventoryRow:
+    """Build an InventoryRow from a raw export dict (for filtered-out categories)."""
+    mk = next((k for k in row if k.startswith("Market Price")), None)
+    try:
+        price = float(row.get(mk, 0) or 0) if mk else 0.0
+    except ValueError:
+        price = 0.0
+    try:
+        qty = int(row.get("Quantity", 0) or 0)
+    except ValueError:
+        qty = 0
+    return InventoryRow(
+        raw=row, category=(row.get("Category") or "").strip(),
+        set_name=(row.get("Set") or "").strip(),
+        product_name=(row.get("Product Name") or "").strip(),
+        card_number=(row.get("Card Number") or "").strip(),
+        variance=(row.get("Variance") or "").strip(),
+        grade=(row.get("Grade") or "Ungraded").strip(),
+        quantity=qty, market_price=price,
+    )
+
+
+def _build_cockpit(results: list, export_path: str) -> tuple[list[dict], list[dict]]:
+    """
+    Combined sell-cockpit rows across every bucket the tabs show.
+    Returns (cockpit, extra_holds):
+      cockpit: [{inv, tid, bucket('pkmn'|'mtg'|'ygo'), xflags}] — matcher rows first
+               (indices align with `results`), then filtered-out extras (YGO,
+               Japanese Pokémon, MTG art cards).
+      extra_holds: graded/sealed rows found among the extras (e.g. graded JP slabs).
+    """
+    cockpit: list[dict] = []
+    for r in results:
+        inv = r.inventory_row
+        cockpit.append({
+            "inv": inv,
+            "tid": r.matched_row.tcgplayer_id if r.matched_row else None,
+            "bucket": "pkmn" if inv.category == "Pokemon" else "mtg",
+            "xflags": [],
+        })
+
+    extra_holds: list[dict] = []
+    _, _, filtered_out, _ = load_export(export_path)
+    for row in filtered_out:
+        inv = _inv_from_raw(row)
+        reason = row.get("_reason", "")
+        if inv.grade and inv.grade != "Ungraded":
+            extra_holds.append({**row, "_reason": "graded",
+                                "_market_value": inv.market_price * (inv.quantity or 1)})
+            continue
+        if SEALED_KEYWORDS.search(inv.product_name) or SEALED_BRACKET_PATTERN.search(inv.product_name):
+            extra_holds.append({**row, "_reason": "sealed",
+                                "_market_value": inv.market_price * (inv.quantity or 1)})
+            continue
+        if inv.category == "YuGiOh":
+            cockpit.append({"inv": inv, "tid": None, "bucket": "ygo", "xflags": []})
+        elif reason == "Japanese Pokemon set":
+            cockpit.append({"inv": inv, "tid": None, "bucket": "pkmn", "xflags": ["japanese"]})
+        elif reason == "MTG art card":
+            cockpit.append({"inv": inv, "tid": None, "bucket": "mtg", "xflags": ["art-card"]})
+    return cockpit, extra_holds
 
 
 def _serialize_result(r: MatchResult, row_idx: int) -> dict:
@@ -191,16 +259,25 @@ def api_match():
     # quickly. Runs in a background thread; doesn't block the response.
     _spawn_image_prewarm(results)
 
+    cockpit, extra_holds = _build_cockpit(results, str(export_path))
+
     export_hash = _hash_file(export_path)
     SESSIONS[export_hash] = {
         "results": results,
-        "set_aside": set_aside,
+        "set_aside": set_aside + extra_holds,
+        "cockpit": cockpit,
         "stats": stats,
         "export_path": str(export_path),
         # legacy field — decisions are now stored globally, not per-session
         "db_path": None,
     }
     CURRENT_SESSION["hash"] = export_hash
+
+    # Import = sync: a fresh upload is the source of truth. Decisions for cards
+    # no longer in the export are removed; tags on surviving cards persist.
+    if "export" in request.files:
+        current = {_nkey_inv(c["inv"]) for c in cockpit}
+        stats["pruned_decisions"] = session_db.prune_missing(current)
 
     return jsonify({
         "session": export_hash,
@@ -358,42 +435,52 @@ def _price_band(price: float) -> str:
     return "o50"
 
 
+def _load_live_prices() -> dict:
+    from config import DATA_DIR
+    p = DATA_DIR / "live_prices.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
 @app.route("/api/sell")
 def api_sell():
-    """Enriched rows for the visual Sell Cockpit: route + price band + image + tags."""
+    """All tab rows for the Sell Cockpit: pkmn/mtg/ygo raw (actionable) +
+    graded/sealed (display) with live-price overlay and per-bucket totals."""
     import channels
     from config import CONDITION_FACTORS
     h = CURRENT_SESSION["hash"]
     if not h or h not in SESSIONS:
         return jsonify({"error": "no active session — run a match first"}), 400
     s = SESSIONS[h]
-    decisions = _decisions_for_session(s)
+    live = _load_live_prices()
+    all_dec = session_db.all_decisions()
 
     rows = []
-    keeper_ct, keeper_val = 0, 0.0
-    for idx, r in enumerate(s["results"]):
-        inv = r.inventory_row
-        d = decisions.get(idx) or {}
-        cond = d.get("condition") or "NM"
-        effective = inv.market_price * CONDITION_FACTORS.get(cond, 1.0)
+    for idx, c in enumerate(s.get("cockpit") or []):
+        inv = c["inv"]
+        nkey = _nkey_inv(inv)
+        d = all_dec.get(nkey) or {}
         tags = d.get("tags", [])
+        cond = d.get("condition") or "NM"
 
-        # Keepers now live in Holds — keep them out of the sell grid.
-        if d.get("attribute") == "personal":
-            keeper_ct += 1
-            keeper_val += effective * inv.quantity
-            continue
+        lp = live.get(nkey) or {}
+        market = lp.get("market") or inv.market_price
+        effective = market * CONDITION_FACTORS.get(cond, 1.0)
 
-        tid = None
-        if d.get("link_kind") == "confirm" and d.get("tcgplayer_id"):
-            tid = d["tcgplayer_id"]
-        elif r.matched_row is not None:
-            tid = r.matched_row.tcgplayer_id
+        tid = d.get("tcgplayer_id") if d.get("link_kind") == "confirm" else None
+        tid = tid or c["tid"]
         img_url = (images_mod.resolve_image_url(tid, inv.category, inv.product_name,
                    inv.set_name, inv.card_number, cached_only=True) if tid else None)
 
         route = channels.route_row(inv, price=effective)
-        nkey = _natural_key_for(r)
+
+        # PSA-10: real (PriceCharting, via Update Prices) beats the class estimate.
+        psa10_real = bool(lp.get("psa10"))
+        psa10 = lp.get("psa10") or route.psa10
 
         # Off-center deters grading (gem rate collapses) → never a grade candidate.
         off_center = "off-center" in tags
@@ -404,25 +491,28 @@ def api_sell():
         rows.append({
             "row_idx":        idx,
             "natural_key":    nkey,
+            "bucket":         c["bucket"],
             "name":           inv.product_name,
             "set":            inv.set_name,
             "number":         inv.card_number,
             "variance":       inv.variance,
             "qty":            inv.quantity,
             "price":          round(effective, 2),
-            "market_price":   round(inv.market_price, 2),
+            "market_price":   round(market, 2),
+            "price_is_live":  bool(lp.get("market")),
             "condition":      cond,
             "category":       inv.category,
             "tcgplayer_id":   tid,
             "image_url":      img_url,
             "channel":        route.channel,
             "channel_reason": route.reason,
-            "flags":          route.flags,
+            "flags":          route.flags + c["xflags"],
             "band":           _price_band(effective),
             "value_tier":     route.value_tier,
             "card_class":     route.card_class,
-            "psa10":          route.psa10,
-            "psa10_pct":      route.psa10_pct,
+            "psa10":          round(psa10, 2) if psa10 else 0,
+            "psa10_real":     psa10_real,
+            "psa10_x":        round(psa10 / effective, 1) if (psa10 and effective) else 0,
             "shop_trade":     route.shop_trade,
             "shop_cash":      route.shop_cash,
             "net_unit":       round(route.rec_net, 2),
@@ -433,63 +523,147 @@ def api_sell():
             "grade_gap":      0 if off_center else (round(route.grade.ev_gap, 2) if route.grade else 0),
             "grade_reason":   grade_reason,
             "off_center":     off_center,
-            "keep":           False,
-            "attribute":      d.get("attribute"),
+            "not_nm":         "not-nm" in tags,
+            "keep":           d.get("attribute") == "personal",
             "tags":           tags,
-            "status":         d.get("status"),
-            "sale_price":     d.get("sale_price"),
-            "listed_at":      d.get("listed_at"),
-            "sold_at":        d.get("sold_at"),
             "has_front":      _photo_path(nkey, "front").exists(),
             "has_back":       _photo_path(nkey, "back").exists(),
         })
-    rows.sort(key=lambda x: -x["price"])   # most valuable first (default working order)
-    return jsonify({"rows": rows, "count": len(rows),
-                    "summary": _sell_summary(rows, keeper_ct, round(keeper_val, 2))})
+
+    # Graded + sealed (long-term holds) — display rows for their tabs.
+    holds = []
+    for row in s["set_aside"]:
+        reason = row.get("_reason", "")
+        if reason not in ("graded", "sealed"):
+            continue
+        name = (row.get("Product Name") or "").strip()
+        holds.append({
+            "row_idx": -1, "bucket": reason,
+            "name": name, "set": (row.get("Set") or "").strip(),
+            "number": (row.get("Card Number") or "").strip(),
+            "grade": row.get("Grade", ""), "qty": row.get("Quantity", 1),
+            "price": round(float(row.get("_market_value", 0) or 0), 2),
+            "category": row.get("Category", ""), "tags": [], "keep": False,
+        })
+
+    rows.sort(key=lambda x: -x["price"])
+    holds.sort(key=lambda x: -x["price"])
+    return jsonify({"rows": rows + holds, "count": len(rows) + len(holds),
+                    "summary": _sell_summary(rows, holds)})
 
 
-def _sell_summary(rows: list[dict], keepers_count: int = 0, keepers_value: float = 0.0) -> dict:
-    """Portfolio recovery rollup: net % back, by tier, incl/excl bulk tail, grade queue.
-    Keepers are excluded from `rows` (they're in Holds); counts come in as args."""
-    sellable = rows
+def _sell_summary(rows: list[dict], holds: list[dict]) -> dict:
+    """Per-tab totals + recovery rollup over the raw sellable pool (keepers excluded)."""
+    sellable = [r for r in rows if not r["keep"]]
+
     def agg(rs):
         mkt = sum(r["price"] * r["qty"] for r in rs)
-        net = sum(r["net_total"] for r in rs)
+        net = sum(r.get("net_total", 0) for r in rs)
         return round(mkt, 2), round(net, 2), (round(net / mkt, 3) if mkt else 0)
 
     mkt, net, pct = agg(sellable)
-    tiers = {}
-    for tier in ("HIGH", "MID", "LOW", "BULK"):
-        tm, tn, tp = agg([r for r in sellable if r["value_tier"] == tier])
-        tiers[tier] = {"market": tm, "net": tn, "pct": tp}
-    non_bulk = [r for r in sellable if r["channel"] != "Bulk lot"]
-    nbm, nbn, nbp = agg(non_bulk)
+    buckets = {}
+    for b in ("pkmn", "mtg", "ygo"):
+        bm, bn, bp = agg([r for r in sellable if r["bucket"] == b])
+        buckets[b] = {"market": bm, "net": bn, "pct": bp,
+                      "count": sum(1 for r in rows if r["bucket"] == b)}
+    for b in ("graded", "sealed"):
+        hs = [x for x in holds if x["bucket"] == b]
+        buckets[b] = {"market": round(sum(x["price"] for x in hs), 2),
+                      "net": 0, "pct": 0, "count": len(hs)}
 
     grade_cands = [r for r in sellable if r["grade_flag"]]
-    consign = [r for r in sellable if r["price"] >= 2000]   # config.Grading.CONSIGN_FLOOR_GRADED
-
-    # Ledger — actuals as you sell down.
-    sold = [r for r in rows if r.get("status") == "sold"]
-    listed = [r for r in rows if r.get("status") == "listed"]
-    realized = round(sum((r.get("sale_price") or 0) for r in sold), 2)
-    market_sold = round(sum(r["price"] * r["qty"] for r in sold), 2)
+    keepers = [r for r in rows if r["keep"]]
     return {
         "market": mkt, "net": net, "pct": pct,
-        "pct_excl_bulk": nbp, "net_excl_bulk": nbn, "market_excl_bulk": nbm,
-        "by_tier": tiers,
+        "by_bucket": buckets,
         "grade_candidates": len(grade_cands),
         "grade_extra": round(sum(r["grade_gap"] for r in grade_cands), 2),
-        "consign_eligible": len(consign),
-        "keepers": keepers_count,
-        "keepers_value": keepers_value,
+        "keepers": len(keepers),
+        "keepers_value": round(sum(r["price"] * r["qty"] for r in keepers), 2),
+        "not_nm_queue": sum(1 for r in rows if r["not_nm"]),
         "count_sellable": len(sellable),
-        "listed": len(listed),
-        "sold": len(sold),
-        "realized": realized,
-        "market_sold": market_sold,
-        "realized_pct": round(realized / market_sold, 3) if market_sold else 0,
-        "unlisted_sellable": sum(1 for r in sellable if not r.get("status")),
     }
+
+
+# ── Update Prices job (the physical button) ─────────────────────────────────
+
+UPDATE_JOB = {"running": False, "done": 0, "total": 0, "started": None, "error": None}
+
+
+def _run_price_update(cards: list[dict]) -> None:
+    import pricing
+    from concurrent.futures import ThreadPoolExecutor
+    from config import DATA_DIR
+    path = DATA_DIR / "live_prices.json"
+    live = _load_live_prices()
+    lock = __import__("threading").Lock()
+
+    def one(c):
+        try:
+            m = pricing.market_price(c["name"], c["set"], c["number"],
+                                     c["category"], c["variance"], "Ungraded")
+            p10 = None
+            if c["category"] == "Pokemon" and (m or c["price"]) >= 10:
+                pc = pricing.pricecharting_lookup(
+                    f"pokemon {c['name'].split(' - ')[0]} {c['number'].split('/')[0]}")
+                p10 = (pc or {}).get("grade10_psa")
+            with lock:
+                ent = live.get(c["nkey"], {})
+                if m:
+                    ent["market"] = round(float(m), 2)
+                if p10:
+                    ent["psa10"] = round(float(p10), 2)
+                ent["ts"] = time.time()
+                live[c["nkey"]] = ent
+                UPDATE_JOB["done"] += 1
+                if UPDATE_JOB["done"] % 25 == 0:
+                    path.write_text(json.dumps(live))
+        except Exception:
+            with lock:
+                UPDATE_JOB["done"] += 1
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(one, cards))
+    path.write_text(json.dumps(live))
+    UPDATE_JOB["running"] = False
+
+
+@app.route("/api/update-prices", methods=["POST"])
+def api_update_prices():
+    """Refresh market prices (pokemontcg.io/PriceCharting) + real PSA-10 prices
+    for the raw pool. Runs in the background; poll GET for progress."""
+    import threading
+    h = CURRENT_SESSION["hash"]
+    if not h or h not in SESSIONS:
+        return jsonify({"error": "no active session"}), 400
+    if UPDATE_JOB["running"]:
+        return jsonify({"ok": True, "already_running": True, **UPDATE_JOB})
+
+    seen, cards = set(), []
+    for c in SESSIONS[h].get("cockpit") or []:
+        inv = c["inv"]
+        nkey = _nkey_inv(inv)
+        if nkey in seen:
+            continue
+        seen.add(nkey)
+        # Bound the job: all Pokémon raw; MTG only where a live price matters ($3+).
+        if inv.category == "Pokemon" or (inv.category == "Magic: The Gathering"
+                                         and inv.market_price >= 3):
+            cards.append({"nkey": nkey, "name": inv.product_name, "set": inv.set_name,
+                          "number": inv.card_number, "category": inv.category,
+                          "variance": inv.variance, "price": inv.market_price})
+    cards.sort(key=lambda c: -c["price"])   # most valuable first
+
+    UPDATE_JOB.update(running=True, done=0, total=len(cards),
+                      started=time.time(), error=None)
+    threading.Thread(target=_run_price_update, args=(cards,), daemon=True).start()
+    return jsonify({"ok": True, **UPDATE_JOB})
+
+
+@app.route("/api/update-prices", methods=["GET"])
+def api_update_prices_status():
+    return jsonify(UPDATE_JOB)
 
 
 @app.route("/api/tag", methods=["POST"])
@@ -519,35 +693,14 @@ def api_tag():
 
 
 def _row_nkey(row_idx):
+    """Cockpit row_idx → natural key (cockpit = matcher rows + YGO/JP/art extras)."""
     h = CURRENT_SESSION["hash"]
     if not h or h not in SESSIONS:
         return None, (jsonify({"error": "no active session"}), 400)
-    if row_idx is None or not (0 <= int(row_idx) < len(SESSIONS[h]["results"])):
+    cockpit = SESSIONS[h].get("cockpit") or []
+    if row_idx is None or not (0 <= int(row_idx) < len(cockpit)):
         return None, (jsonify({"error": "row_idx required / out of range"}), 400)
-    return _natural_key_for(SESSIONS[h]["results"][int(row_idx)]), None
-
-
-@app.route("/api/status", methods=["POST"])
-def api_status():
-    """Ledger: mark a card listed/sold and record a sale price.
-    Body: { row_idx, status?: 'listed'|'sold'|null, sale_price?: number }"""
-    body = request.get_json(silent=True) or {}
-    nkey, err = _row_nkey(body.get("row_idx"))
-    if err:
-        return err
-    kwargs = {}
-    if "status" in body:
-        kwargs["status"] = body["status"] or None
-    if "sale_price" in body:
-        try:
-            kwargs["sale_price"] = float(body["sale_price"]) if body["sale_price"] not in (None, "") else None
-        except (ValueError, TypeError):
-            kwargs["sale_price"] = None
-    try:
-        session_db.update_listing(nkey, **kwargs)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    return jsonify({"ok": True})
+    return _nkey_inv(cockpit[int(row_idx)]["inv"]), None
 
 
 @app.route("/api/photo", methods=["POST"])
@@ -604,63 +757,6 @@ def api_condition():
     return jsonify({"ok": True})
 
 
-@app.route("/api/holds")
-def api_holds():
-    """Long-term holds: graded + sealed (set aside) + keepers (★ marked personal)."""
-    import images as im
-    from config import CONDITION_FACTORS
-    h = CURRENT_SESSION["hash"]
-    if not h or h not in SESSIONS:
-        return jsonify({"error": "no active session"}), 400
-    s = SESSIONS[h]
-    items = []
-    for row in s["set_aside"]:
-        reason = row.get("_reason", "")
-        if reason not in ("graded", "sealed"):
-            continue
-        name = (row.get("Product Name") or "").strip()
-        setn = (row.get("Set") or "").strip()
-        num = (row.get("Card Number") or "").strip()
-        try:
-            qty = int(row.get("Quantity", 1) or 1)
-        except ValueError:
-            qty = 1
-        img = None
-        if reason == "graded" and row.get("Category") == "Pokemon":
-            img = im.resolve_image_url("hold-" + name + num, "Pokemon", name, setn, num, cached_only=True)
-        items.append({
-            "name": name, "set": setn, "number": num, "grade": row.get("Grade", ""),
-            "reason": reason, "qty": qty,
-            "value": round(float(row.get("_market_value", 0) or 0), 2), "image_url": img,
-        })
-
-    # Keepers — raw singles the user ★-marked as personal.
-    decisions = _decisions_for_session(s)
-    for idx, r in enumerate(s["results"]):
-        d = decisions.get(idx) or {}
-        if d.get("attribute") != "personal":
-            continue
-        inv = r.inventory_row
-        eff = inv.market_price * CONDITION_FACTORS.get(d.get("condition") or "NM", 1.0)
-        tid = d.get("tcgplayer_id") or (r.matched_row.tcgplayer_id if r.matched_row else None)
-        img = im.resolve_image_url(tid, inv.category, inv.product_name, inv.set_name,
-                                   inv.card_number, cached_only=True) if tid else None
-        items.append({
-            "name": inv.product_name, "set": inv.set_name, "number": inv.card_number,
-            "grade": d.get("condition") or "", "reason": "keeper", "qty": inv.quantity,
-            "value": round(eff * inv.quantity, 2), "image_url": img,
-        })
-
-    items.sort(key=lambda x: -x["value"])
-    return jsonify({
-        "items": items, "count": len(items),
-        "total": round(sum(i["value"] for i in items), 2),
-        "graded": sum(1 for i in items if i["reason"] == "graded"),
-        "sealed": sum(1 for i in items if i["reason"] == "sealed"),
-        "keepers": sum(1 for i in items if i["reason"] == "keeper"),
-    })
-
-
 @app.route("/api/manifest", methods=["POST"])
 def api_manifest():
     """
@@ -678,14 +774,14 @@ def api_manifest():
     body = request.get_json(silent=True) or {}
     tag = (body.get("tag") or "shop").lower()
     s = SESSIONS[h]
-    decisions = _decisions_for_session(s)
+    all_dec = session_db.all_decisions()
 
     picks = []
-    for idx, r in enumerate(s["results"]):
-        d = decisions.get(idx) or {}
+    for c in s.get("cockpit") or []:
+        inv = c["inv"]
+        d = all_dec.get(_nkey_inv(inv)) or {}
         if tag not in (d.get("tags") or []) or d.get("attribute") == "personal":
             continue
-        inv = r.inventory_row
         cond = d.get("condition") or "NM"
         eff = inv.market_price * CONDITION_FACTORS.get(cond, 1.0)
         picks.append((inv, cond, eff))

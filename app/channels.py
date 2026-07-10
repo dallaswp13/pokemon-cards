@@ -145,7 +145,7 @@ def route_row(inv: InventoryRow, price: float = None) -> Route:
 
     scarce = is_scarce(inv)
     if price < Router.BULK_CEILING_USD:
-        channel, reason = "Bulk lot", "under $5 — lot/buylist (Workflow D)"
+        channel, reason = "LCS", "under $5 — local card shop (80/70% trade)"
     elif scarce and price >= Router.EBAY_SCARCE_MIN_USD:
         channel, reason, flags = "eBay (auction)", "scarce/chase — auction realizes above market", flags + ["scarce"]
     elif tcgp_tracking:
@@ -156,19 +156,21 @@ def route_row(inv: InventoryRow, price: float = None) -> Route:
         channel, reason = "TCGplayer", "net-best fixed price (or tie)"
 
     r = Route(inv, channel, reason, e.net, t.net, flags)
-    r.rec_net = (fees.bulk_unit_cash(price) if channel == "Bulk lot"
+    r.shop_trade = round(fees.shop_trade(price), 2)
+    r.shop_cash = round(fees.shop_cash(price), 2)
+    r.rec_net = (r.shop_trade if channel == "LCS"   # Dallas prefers trade credit
                  else e.net if channel.startswith("eBay") else t.net)
     r.net_pct = (r.rec_net / price) if price else 0.0
     r.value_tier = _value_tier(price)
     r.card_class = card_class(inv)
     r.sell_now = _sell_now(price, r.card_class)
-    m10 = Grading.CLASS_PARAMS.get(r.card_class, {}).get("m10", 0)
-    r.psa10 = round(price * m10, 2)
-    r.psa10_pct = m10
-    r.shop_trade = round(fees.shop_trade(price), 2)
-    r.shop_cash = round(fees.shop_cash(price), 2)
-    import grading   # lazy import avoids a channels↔grading cycle
-    r.grade = grading.grade_decision(price, r.card_class)
+    # Grading / PSA-10 are Pokémon concepts here — suppress for MTG/YGO.
+    if inv.category == "Pokemon":
+        m10 = Grading.CLASS_PARAMS.get(r.card_class, {}).get("m10", 0)
+        r.psa10 = round(price * m10, 2)
+        r.psa10_pct = m10
+        import grading   # lazy import avoids a channels↔grading cycle
+        r.grade = grading.grade_decision(price, r.card_class)
     return r
 
 
