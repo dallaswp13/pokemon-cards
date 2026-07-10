@@ -1,10 +1,12 @@
-/* Sell Cockpit (cloud) — Supabase-backed viewer/tagger. Data syncs up from the
-   local tool (`sell.py push`); tags/conditions edited here flow back on `pull`. */
+/* Sell Cockpit (cloud) — self-contained: import your Collectr export.csv here,
+   tag/condition cards, get channel routing + PSA-10 signals, photos for eBay,
+   and downloadable LCS price sheets. Data is per-user (Supabase RLS). */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { buildRows } from "./engine.js";
 
 const SUPABASE_URL = "https://xmcohwtftpmnanootpia.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY29od3RmdHBtbmFub290cGlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODU5NTcsImV4cCI6MjA5OTI2MTk1N30.YVOa8JBdaJH9aXXsyUjOhdwKiohj4SZ6rVia36KfP0k";
+const FN_PRICES = SUPABASE_URL + "/functions/v1/prices";
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 const $ = (s) => document.querySelector(s);
@@ -22,7 +24,7 @@ const TABS = [["pkmn", "Pkmn Raw"], ["mtg", "MTG Raw"], ["ygo", "YGO Raw"],
 
 let rows = [];
 let tab = localStorage.getItem("sellTab") || "pkmn";
-const filters = { channel: "", band: "", notnm: "", grade: "", oc: "", shop: "", keepers: "", tag: "", search: "" };
+const filters = { channel: "", band: "", notnm: "", grade: "", oc: "", shop: "", keepers: "", photos: "", tag: "", search: "" };
 let sortKey = "value";
 let viewMode = localStorage.getItem("sellViewMode") || "grid";
 
@@ -30,6 +32,7 @@ const money = (n) => "$" + Math.round(n).toLocaleString();
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const notNM = (r) => (r.tags || []).includes("not-nm");
 const offC = (r) => (r.tags || []).includes("off-center");
+const hasPhotos = (r) => (r.photos || []).length > 0;
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 async function boot() {
@@ -122,6 +125,7 @@ function passes(r) {
   if (filters.oc && !offC(r)) return false;
   if (filters.shop && !(r.tags || []).includes("shop")) return false;
   if (filters.keepers && !r.keep) return false;
+  if (filters.photos && !hasPhotos(r)) return false;
   if (filters.tag && !(r.tags || []).some((x) => x.includes(filters.tag.toLowerCase()))) return false;
   if (filters.search) {
     const q = filters.search.toLowerCase();
@@ -180,7 +184,8 @@ function tile(r, holdsTab) {
   const badges =
     (notNM(r) ? '<span class="tb notnm">🔍</span>' : "") +
     (offC(r) ? '<span class="tb oc">◎</span>' : "") +
-    ((r.tags || []).includes("shop") ? '<span class="tb shop">🏪</span>' : "");
+    ((r.tags || []).includes("shop") ? '<span class="tb shop">🏪</span>' : "") +
+    (hasPhotos(r) ? '<span class="tb cam">📷</span>' : "");
   const condChip = r.condition && r.condition !== "NM" ? ` <span class="cond-chip">${r.condition}</span>` : "";
   el.innerHTML = `
     <div class="tile-img">${img}<div class="tile-badges">${badges}</div></div>
@@ -246,6 +251,139 @@ function lcsCsv() {
   URL.revokeObjectURL(a.href);
 }
 
+// ── Update prices: real market + PSA-10 via the price-proxy edge function ───
+async function updatePrices() {
+  const btn = $("#prices-btn");
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return;
+  const targets = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10)
+    .sort((a, b) => b.price - a.price);
+  if (!targets.length) { alert("No Pokémon cards ≥ $10 to update."); return; }
+  if (!confirm(`Fetch real market + PSA-10 prices for ${targets.length} Pokémon cards ($10+)?`)) return;
+  btn.disabled = true;
+  let done = 0, hit = 0, failed = 0, notConfigured = false;
+  const hist = [];
+  const queue = [...targets];
+
+  const worker = async () => {
+    while (queue.length && !notConfigured) {
+      const r = queue.shift();
+      try {
+        const bare = r.name.replace(/\s*\([^)]*\)/g, "").split(" - ")[0].trim();
+        const num = (r.number || "").split("/")[0];
+        const resp = await fetch(FN_PRICES, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON,
+                     "Authorization": "Bearer " + session.access_token },
+          body: JSON.stringify({ q: `pokemon ${bare} ${num}`.trim() }),
+        });
+        if (resp.status === 503) { notConfigured = true; break; }
+        if (resp.ok) {
+          const d = await resp.json();
+          const patch = {};
+          if (d.loose) {
+            patch.market_price = d.loose;
+            patch.price = Math.round(d.loose * (COND_FACTORS[r.condition || "NM"] || 1) * 100) / 100;
+          }
+          if (d.psa10) { patch.psa10 = d.psa10; patch.psa10_real = true; }
+          const base = patch.price || r.price;
+          if (patch.psa10 && base) patch.psa10_x = Math.round((patch.psa10 / base) * 10) / 10;
+          if (Object.keys(patch).length) {
+            await save(r, patch);
+            hist.push({ natural_key: r.natural_key, price: r.price, psa10: r.psa10 || 0 });
+            hit++;
+          } else failed++;
+        } else failed++;
+      } catch (e) { failed++; }
+      done++;
+      if (done % 5 === 0) btn.textContent = `💲 ${done}/${targets.length}…`;
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  for (let i = 0; i < hist.length; i += 500) {
+    await sb.from("price_history").insert(hist.slice(i, i + 500));
+  }
+  btn.disabled = false;
+  btn.textContent = "💲 Update prices";
+  if (notConfigured) alert("Real prices aren't enabled yet — the PriceCharting key isn't configured server-side (one-time setup).");
+  else alert(`Updated ${hit} cards with real market + PSA-10 prices${failed ? ` · ${failed} had no clean match (kept import prices)` : ""}.`);
+  renderSummary(); renderTabs(); render();
+}
+
+// ── eBay listing generator (copy-ready draft) ───────────────────────────────
+function ebayListingText(r) {
+  const game = r.bucket === "pkmn" ? "Pokemon TCG" : r.bucket === "mtg" ? "MTG Magic" : "Yu-Gi-Oh";
+  let title = `${game} ${r.name} ${r.set_name} ${r.number || ""} ${r.condition || "NM"}`.replace(/\s+/g, " ").trim();
+  if (title.length > 80) title = title.slice(0, 80).trim();
+  const list = Math.round((+r.market_price || +r.price) * 1.15 * 100) / 100;
+  const scarce = (r.flags || []).includes("scarce");
+  return [
+    `TITLE (${title.length}/80):`, title, "",
+    `FORMAT: ${scarce ? "7-day auction · $0.99 start · NO reserve · end Sunday 7–10pm ET (scarce/chase)" : "Buy It Now + Best Offer"}`,
+    `LIST PRICE: $${list.toFixed(2)}  (market $${(+r.market_price || +r.price).toFixed(2)} × 1.15)`,
+    `BEST OFFER: auto-accept ≥ $${(list * 0.88).toFixed(2)} · auto-decline < $${(list * 0.65).toFixed(2)}`,
+    `SHIPPING: ${r.price < 20 ? "eBay Standard Envelope (raw single < $20)" : r.price >= 250 ? "tracked mailer — routes through eBay Authenticity Guarantee ($250+)" : "USPS Ground Advantage, rigid tracked mailer"}`,
+    "", "ITEM SPECIFICS:",
+    `  Game: ${game}`,
+    `  Card Name: ${r.name}`,
+    `  Set: ${r.set_name}`,
+    `  Card Number: ${r.number || "-"}`,
+    `  Rarity/Finish: ${r.variance || "-"}`,
+    `  Condition: ${r.condition === "NM" || !r.condition ? "Near Mint or Better" : r.condition}`,
+    `  Language: ${(r.flags || []).includes("japanese") ? "Japanese" : "English"}`,
+    `  Graded: No`,
+  ].join("\n");
+}
+
+// ── Photos (Supabase Storage, private per-user) ─────────────────────────────
+async function signedPhoto(uid, nkey, side) {
+  const { data } = await sb.storage.from("card-photos").createSignedUrl(`${uid}/${nkey}/${side}.jpg`, 3600);
+  return data?.signedUrl || null;
+}
+
+async function uploadPhoto(r, side, file) {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  const path = `${user.id}/${r.natural_key}/${side}.jpg`;
+  const { error } = await sb.storage.from("card-photos").upload(path, file, { upsert: true, contentType: file.type || "image/jpeg" });
+  if (error) { alert("Photo upload failed: " + error.message); return; }
+  const photos = Array.from(new Set([...(r.photos || []), side]));
+  await save(r, { photos });
+  openCard(r); render();
+}
+
+async function deletePhoto(r, side) {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  await sb.storage.from("card-photos").remove([`${user.id}/${r.natural_key}/${side}.jpg`]);
+  await save(r, { photos: (r.photos || []).filter((s) => s !== side) });
+  openCard(r); render();
+}
+
+function photoSlot(r, side) {
+  const has = (r.photos || []).includes(side);
+  return `<div class="photo-slot">
+      <label class="ps-drop" data-slot="${side}">
+        ${has ? `<img data-photo="${side}" alt="${side}">` : `<span class="ps-hint">＋ ${side}</span>`}
+        <input type="file" accept="image/*" capture="environment" data-side="${side}" hidden>
+      </label>
+      <div class="ps-row"><span>${side}</span>${has ? `<button class="linkbtn" data-mact="delphoto" data-side="${side}">remove</button>` : ""}</div>
+    </div>`;
+}
+
+// ── Trend (price_history) ───────────────────────────────────────────────────
+async function trendHtml(r) {
+  const { data } = await sb.from("price_history").select("price,ts")
+    .eq("natural_key", r.natural_key).order("ts", { ascending: true }).limit(100);
+  if (!data || data.length < 2) return "";
+  const first = data[0], last = data[data.length - 1];
+  const days = (new Date(last.ts) - new Date(first.ts)) / 864e5;
+  if (days < 1 || !+first.price) return "";
+  const chg = (last.price - first.price) / first.price;
+  const dir = chg > 0.03 ? "▲ rising" : chg < -0.03 ? "▼ falling" : "→ flat";
+  return `<div class="m-line">${dir} ${(chg * 100).toFixed(0)}% over ${Math.round(days)}d <span class="dim">(${data.length} price snapshots)</span></div>`;
+}
+
 // ── Modal ───────────────────────────────────────────────────────────────────
 function closeCard() { $("#card-modal").classList.add("hidden"); }
 function openCard(r) {
@@ -272,6 +410,7 @@ function openCard(r) {
         <div class="m-extra-lines">
           ${psa}
           <div class="m-line">🏪 Shop: trade <b>$${Math.round(r.shop_trade || 0)}</b> / cash $${Math.round(r.shop_cash || 0)}</div>
+          <div id="m-trend"></div>
         </div>
         <div class="m-row">
           <button class="m-btn ${r.keep ? "on" : ""}" data-mact="keep">${r.keep ? "★ Keeper" : "☆ Keep"}</button>
@@ -280,7 +419,14 @@ function openCard(r) {
           <button class="m-btn ${(r.tags || []).includes("to-grade") ? "on" : ""}" data-mact="gradepile">◆ To grade</button>
           <button class="m-btn ${(r.tags || []).includes("shop") ? "on" : ""}" data-mact="shop">🏪 Drop-off</button>
         </div>
-        <p class="dim" style="font-size:12px">Photos + shop manifest live in the local tool · edits here sync back on <code>sell.py pull</code>.</p>
+        <div class="m-row">
+          <button class="m-btn" data-mact="ebaycopy">📋 Copy eBay listing</button>
+          <button class="m-btn" data-mact="ebayopen">↗ eBay sell page</button>
+        </div>
+        <div class="m-photos">
+          <div class="filter-label">Photos for eBay</div>
+          <div class="ps-wrap">${photoSlot(r, "front")}${photoSlot(r, "back")}</div>
+        </div>
       </div>
     </div>`;
   const panel = $("#modal-panel");
@@ -294,8 +440,15 @@ function openCard(r) {
     else if (act === "notnm") await toggleTag(r, "not-nm");
     else if (act === "gradepile") await toggleTag(r, "to-grade");
     else if (act === "shop") await toggleTag(r, "shop");
+    else if (act === "ebaycopy") {
+      try { await navigator.clipboard.writeText(ebayListingText(r)); ev.target.textContent = "📋 Copied ✓"; } catch (e) { alert(ebayListingText(r)); }
+      return;
+    } else if (act === "ebayopen") { window.open("https://www.ebay.com/sell/create", "_blank"); return; }
+    else if (act === "delphoto") { await deletePhoto(r, ev.target.dataset.side); return; }
     renderSummary(); renderTabs(); render(); openCard(r);
   };
+  panel.querySelectorAll("input[type=file]").forEach((inp) =>
+    inp.addEventListener("change", () => { if (inp.files[0]) uploadPhoto(r, inp.dataset.side, inp.files[0]); }));
   const cs = $("#m-cond");
   cs.addEventListener("change", async () => {
     const cond = cs.value;
@@ -305,6 +458,21 @@ function openCard(r) {
     renderSummary(); renderTabs(); render(); openCard(r);
   });
   $("#card-modal").classList.remove("hidden");
+
+  // Async fills: signed photo URLs + trend line.
+  (async () => {
+    const { data: { user } } = await sb.auth.getUser();
+    if (user) {
+      for (const side of r.photos || []) {
+        const url = await signedPhoto(user.id, r.natural_key, side);
+        const el = panel.querySelector(`img[data-photo="${side}"]`);
+        if (url && el) el.src = url;
+      }
+    }
+    const t = await trendHtml(r);
+    const td = panel.querySelector("#m-trend");
+    if (td && t) td.outerHTML = t;
+  })();
 }
 
 // ── Import CSV (fully in-browser: parse → route → store) ───────────────────
@@ -316,13 +484,11 @@ async function importCsv(file) {
     const { data: { user } } = await sb.auth.getUser();
     if (!user) { status("Sign in first."); return; }
 
-    // Carry tags/condition/keep forward from existing rows (sync semantics:
-    // the upload replaces the list; your custom fields persist by card).
     status("Loading existing tags…");
     const existing = {};
     for (let from = 0; from < 20000; from += 1000) {
       const { data, error } = await sb.from("cards")
-        .select("natural_key,tags,condition,keep").range(from, from + 999);
+        .select("natural_key,tags,condition,keep,photos").range(from, from + 999);
       if (error) break;
       (data || []).forEach((r) => { existing[r.natural_key] = r; });
       if (!data || data.length < 1000) break;
@@ -330,7 +496,11 @@ async function importCsv(file) {
 
     const cards = await buildRows(text, existing, status);
     if (!cards.length) { status("No cards found — is this a Collectr export.csv?"); return; }
-    cards.forEach((c) => { c.user_id = user.id; });
+    cards.forEach((c) => {
+      c.user_id = user.id;
+      const prev = existing[c.natural_key];
+      if (prev && prev.photos && prev.photos.length) c.photos = prev.photos;
+    });
 
     status("Replacing your inventory…");
     const del = await sb.from("cards").delete().eq("user_id", user.id);
@@ -350,6 +520,7 @@ async function importCsv(file) {
 // ── Wiring ──────────────────────────────────────────────────────────────────
 $("#import-btn").addEventListener("click", () => $("#import-file").click());
 $("#lcs-btn").addEventListener("click", lcsCsv);
+$("#prices-btn").addEventListener("click", updatePrices);
 $("#import-file").addEventListener("change", () => {
   const f = $("#import-file").files[0];
   if (f) importCsv(f);

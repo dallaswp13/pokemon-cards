@@ -49,6 +49,7 @@
           <input type="search" id="sell-search" placeholder="Search name or set…" />
           <button type="button" id="import-btn" class="primary">📤 Import CSV</button>
           <input type="file" id="import-file" accept=".csv" hidden />
+          <button type="button" id="prices-btn" class="secondary" title="Fetch real market + PSA-10 prices (PriceCharting) for Pokémon $10+">💲 Update prices</button>
           <button type="button" id="lcs-btn" class="secondary" title="Download the shop drop-off price sheet (cards tagged 🏪)">🏪 Drop-off CSV</button>
           <button type="button" id="signout-btn" class="secondary">Sign out</button>
         </div>
@@ -77,6 +78,7 @@
         <button class="chip" data-filter="oc" data-value="oc">◎ OC</button>
         <button class="chip" data-filter="shop" data-value="shop">🏪</button>
         <button class="chip" data-filter="keepers" data-value="keepers">★</button>
+        <button class="chip" data-filter="photos" data-value="photos">📷</button>
         <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
       </div>
 
