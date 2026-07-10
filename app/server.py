@@ -278,6 +278,8 @@ def api_match():
     if "export" in request.files:
         current = {_nkey_inv(c["inv"]) for c in cockpit}
         stats["pruned_decisions"] = session_db.prune_missing(current)
+        # ...and the cloud mirror updates automatically (no manual push).
+        stats["cloud_sync_started"] = _cloud_push_async()
 
     return jsonify({
         "session": export_hash,
@@ -664,6 +666,52 @@ def api_update_prices():
 @app.route("/api/update-prices", methods=["GET"])
 def api_update_prices_status():
     return jsonify(UPDATE_JOB)
+
+
+# ── Cloud sync (Supabase mirror) ────────────────────────────────────────────
+
+CLOUD_JOB = {"running": False, "pushed": 0, "error": None, "finished": None,
+             "configured": None}
+
+
+def _cloud_push_async() -> bool:
+    """Mirror the current dataset to the cloud cockpit in a background thread."""
+    import threading
+    import cloudsync
+    CLOUD_JOB["configured"] = bool(cloudsync.SUPABASE_EMAIL and cloudsync.SUPABASE_PASSWORD)
+    if not CLOUD_JOB["configured"] or CLOUD_JOB["running"]:
+        return False
+
+    def go():
+        try:
+            with app.test_client() as c:
+                d = c.get("/api/sell").get_json()
+            r = cloudsync.push(api_rows=d["rows"])
+            CLOUD_JOB.update(running=False, pushed=r["pushed"], error=None,
+                             finished=time.time())
+        except Exception as e:
+            msg = str(e)
+            if "email_not_confirmed" in msg:
+                msg = "Supabase email not confirmed — click the confirmation link in your inbox, then sync again."
+            CLOUD_JOB.update(running=False, error=msg[:300], finished=time.time())
+
+    CLOUD_JOB.update(running=True, pushed=0, error=None)
+    threading.Thread(target=go, daemon=True).start()
+    return True
+
+
+@app.route("/api/cloud-push", methods=["POST"])
+def api_cloud_push():
+    h = CURRENT_SESSION["hash"]
+    if not h or h not in SESSIONS:
+        return jsonify({"error": "no active session"}), 400
+    started = _cloud_push_async()
+    return jsonify({"ok": True, "started": started, **CLOUD_JOB})
+
+
+@app.route("/api/cloud-push", methods=["GET"])
+def api_cloud_push_status():
+    return jsonify(CLOUD_JOB)
 
 
 @app.route("/api/tag", methods=["POST"])

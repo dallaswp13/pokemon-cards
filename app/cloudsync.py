@@ -56,9 +56,13 @@ def _rows_from_local() -> list[dict]:
         requests.post("http://localhost:5050/api/match", timeout=180)
         r = requests.get("http://localhost:5050/api/sell", timeout=120)
     r.raise_for_status()
+    return _transform(r.json()["rows"])
+
+
+def _transform(api_rows: list[dict]) -> list[dict]:
     out = []
     seen = set()
-    for row in r.json()["rows"]:
+    for row in api_rows:
         nkey = row.get("natural_key") or f"hold-{row['bucket']}-{row['name']}-{row.get('number','')}-{row.get('set','')}"[:120]
         if nkey in seen:
             continue
@@ -84,9 +88,11 @@ def _rows_from_local() -> list[dict]:
     return out
 
 
-def push() -> dict:
+def push(api_rows: list[dict] = None) -> dict:
+    """Mirror the dataset to the cloud. Pass api_rows (the /api/sell rows) to skip
+    the localhost round-trip — used when the server pushes from inside itself."""
     token, uid = _sign_in()
-    rows = _rows_from_local()
+    rows = _transform(api_rows) if api_rows is not None else _rows_from_local()
     for r in rows:
         r["user_id"] = uid
 

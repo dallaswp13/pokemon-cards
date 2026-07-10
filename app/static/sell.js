@@ -407,6 +407,35 @@
     tick();
   }
 
+  async function cloudSync(auto) {
+    const btn = $("#cloud-btn");
+    if (!auto) {
+      try { await fetch("/api/cloud-push", { method: "POST" }); } catch (e) { return; }
+    }
+    btn.disabled = true;
+    const tick = async () => {
+      let st;
+      try { st = await (await fetch("/api/cloud-push")).json(); } catch (e) { btn.disabled = false; return; }
+      if (st.running) {
+        btn.textContent = "☁️ Syncing…";
+        setTimeout(tick, 2000);
+      } else {
+        btn.disabled = false;
+        if (st.error) {
+          btn.textContent = "☁️ Sync";
+          $("#sell-meta").textContent = "Cloud sync failed: " + st.error;
+        } else if (st.configured === false) {
+          btn.textContent = "☁️ Sync";
+          $("#sell-meta").textContent = "Cloud sync not configured — set SUPABASE_EMAIL / SUPABASE_PASSWORD in .env.";
+        } else if (st.pushed) {
+          btn.textContent = "☁️ Synced ✓";
+          setTimeout(() => { btn.textContent = "☁️ Sync"; }, 4000);
+        }
+      }
+    };
+    tick();
+  }
+
   function importCsv() { $("#import-file").click(); }
   async function onImportFile() {
     const f = $("#import-file").files[0];
@@ -420,7 +449,8 @@
       const d = await r.json();
       const pruned = (d.stats || {}).pruned_decisions;
       await load();
-      if (pruned) $("#sell-meta").textContent += ` · synced (${pruned} removed cards cleaned up)`;
+      if (pruned) $("#sell-meta").textContent += ` · ${pruned} removed cards cleaned up`;
+      if ((d.stats || {}).cloud_sync_started) cloudSync(true);   // auto-mirror to the cloud
     } catch (e) { $("#sell-meta").textContent = "Import failed."; }
     $("#import-file").value = "";
   }
@@ -459,6 +489,7 @@
     $("#sell-tag-filter").addEventListener("input", (e) => { filters.tag = e.target.value.trim(); render(); });
     $("#sell-search").addEventListener("input", (e) => { filters.search = e.target.value.trim(); render(); });
     $("#prices-btn").addEventListener("click", updatePrices);
+    $("#cloud-btn").addEventListener("click", () => cloudSync(false));
     $("#import-btn").addEventListener("click", importCsv);
     $("#import-file").addEventListener("change", onImportFile);
     $("#manifest-btn").addEventListener("click", doManifest);
