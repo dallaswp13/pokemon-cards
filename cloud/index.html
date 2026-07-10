@@ -4,12 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Pokémon Sell Cockpit</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header>
     <h1>🃏 Pokémon Sell Cockpit</h1>
-    <p class="subtitle">Liquidate piece-by-piece for the highest % back · synced from your local tool.</p>
+    <p class="subtitle">Liquidate piece-by-piece for the highest % back.</p>
   </header>
 
   <main>
@@ -50,7 +51,11 @@
           <button type="button" id="import-btn" class="primary">📤 Import CSV</button>
           <input type="file" id="import-file" accept=".csv" hidden />
           <button type="button" id="prices-btn" class="secondary" title="Fetch real market + PSA-10 prices (PriceCharting) for Pokémon $10+">💲 Update prices</button>
-          <button type="button" id="lcs-btn" class="secondary" title="Download the shop drop-off price sheet (cards tagged 🏪)">🏪 Drop-off CSV</button>
+          <button type="button" id="lcs-btn" class="secondary" title="Download the shop drop-off price sheet (🏪 pile)">🏪 Drop-off CSV</button>
+          <button type="button" id="tcgp-btn" class="secondary" title="Export the TCGplayer Seller Portal add-quantity sheet for TCGplayer-routed cards">📄 TCGP CSV</button>
+          <button type="button" id="catalog-btn" class="secondary" title="One-time: upload your TCGplayer Seller Portal pricing export CSV(s) as the matching catalog">⚙️ TCGP catalog</button>
+          <input type="file" id="catalog-file" accept=".csv" multiple hidden />
+          <button type="button" id="delete-btn" class="secondary danger" title="Delete your entire cloud inventory">🗑</button>
           <button type="button" id="signout-btn" class="secondary">Sign out</button>
         </div>
       </div>
@@ -73,17 +78,13 @@
           <option value="1_5">$1–5</option>
           <option value="u1">&lt;$1</option>
         </select>
-        <button class="chip" data-filter="notnm" data-value="notnm">🔍 Not NM <span id="notnm-count"></span></button>
-        <button class="chip" data-filter="grade" data-value="grade">◆ Grade</button>
-        <button class="chip" data-filter="oc" data-value="oc">◎ OC</button>
-        <button class="chip" data-filter="shop" data-value="shop">🏪</button>
-        <button class="chip" data-filter="keepers" data-value="keepers">★</button>
-        <button class="chip" data-filter="photos" data-value="photos">📷</button>
+        <button class="chip" data-filter="grade" data-value="grade">◆ Grade candidates</button>
+        <button class="chip" data-filter="oc" data-value="oc">◎ Off-center</button>
         <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
       </div>
 
       <div id="sell-grid" class="sell-grid"></div>
-      <p id="sell-empty" class="empty-state hidden">No cards yet — hit <b>📤 Import CSV</b> and pick your Collectr export to load your inventory.</p>
+      <p id="sell-empty" class="empty-state hidden">Nothing here — cards you file with the quick-tags land in their pile tabs; hit <b>📤 Import CSV</b> if your inventory is empty.</p>
 
       <div id="card-modal" class="modal hidden">
         <div class="modal-backdrop" id="modal-backdrop"></div>

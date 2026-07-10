@@ -217,6 +217,60 @@ export async function pokemonImageUrl(setName, number) {
   return winner ? `https://images.pokemontcg.io/${winner}/${num}.png` : null;
 }
 
+// Scryfall's named-card endpoint IS an image URL (redirects to the card scan) —
+// no per-card pre-resolution needed. Fuzzy match may show a different printing's
+// art for reprints, but it's always the right card.
+export function mtgImageUrl(name) {
+  const clean = (name || "").replace(/\s*\([^)]*\)/g, "").split(" - ")[0].trim();
+  if (!clean) return null;
+  return "https://api.scryfall.com/cards/named?format=image&version=normal&fuzzy=" + encodeURIComponent(clean);
+}
+
+// ── TCGplayer Seller Portal export helpers (matcher-lite, ported) ───────────
+export const TCGP_SET_ALIASES = {
+  "SV: 151": "SV: Scarlet & Violet 151",
+  "Pokemon 151": "SV: Scarlet & Violet 151",
+  "Prismatic Evolutions": "SV: Prismatic Evolutions",
+  "Paldean Fates": "SV: Paldean Fates",
+  "Shrouded Fable": "SV: Shrouded Fable",
+  "Stellar Crown": "SV07: Stellar Crown",
+  "Scarlet & Violet Promo": "SV: Scarlet & Violet Promo Cards",
+  "Sword & Shield Promo": "SWSH: Sword & Shield Promo Cards",
+  "Sun & Moon Promo": "SM Promos",
+  "Art Series: March of the Machines": "Art Series: March of the Machine",
+  "Strixhaven: Mystical Archives": "Strixhaven: Mystical Archive",
+  "The List": "The List Reprints",
+  "Universes Beyond: FINAL FANTASY": "FINAL FANTASY",
+  "Universes Beyond: FINAL FANTASY: Through the Ages": "FINAL FANTASY: Through the Ages",
+};
+
+export function normSetTCGP(name) {
+  return (name || "").normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+export function normNumTCGP(num) {
+  return ((num || "").trim().split("/")[0]).replace(/^0+(?=\d)/, "");
+}
+
+const COND_PREFIX = { NM: "Near Mint", LP: "Lightly Played", MP: "Moderately Played",
+                      HP: "Heavily Played", DMG: "Damaged" };
+const PKMN_VAR_SUFFIX = { "Normal": "", "Holofoil": "Holofoil", "Reverse Holofoil": "Reverse Holofoil",
+  "Poke Ball Reverse Holo": "Reverse Holofoil", "Master Ball Reverse Holo": "Reverse Holofoil",
+  "Unlimited": "Unlimited", "Unlimited Holofoil": "Unlimited Holofoil",
+  "1st Edition": "1st Edition", "1st Edition Holofoil": "1st Edition Holofoil" };
+
+export function tcgpCondition(category, variance, cond) {
+  const prefix = COND_PREFIX[cond || "NM"] || "Near Mint";
+  if (category === "Magic: The Gathering") {
+    if (variance === "Foil") return prefix + " Foil";
+    if (variance === "Normal" || !variance) return prefix;
+    return null;
+  }
+  const sfx = PKMN_VAR_SUFFIX[variance || "Normal"];
+  if (sfx === undefined) return null;
+  return sfx ? prefix + " " + sfx : prefix;
+}
+
 // ── Full import: CSV text → cloud card rows ─────────────────────────────────
 export async function buildRows(csvText, existingByKey, onProgress) {
   const raw = parseCSV(csvText);
@@ -258,17 +312,23 @@ export async function buildRows(csvText, existingByKey, onProgress) {
     else { skipped++; continue; }
 
     if (bucket === "graded" || bucket === "sealed") {
+      // Graded cards use the same art as the ungraded card.
+      const gimg = (bucket === "graded" && category === "Pokemon")
+        ? await pokemonImageUrl(setName, number)
+        : (bucket === "graded" && category === "Magic: The Gathering") ? mtgImageUrl(name) : null;
       out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance,
                  grade, qty, price: Math.round(market * qty * 100) / 100, market_price: market,
                  condition: "NM", channel: "", channel_reason: "", flags: [], band: "",
                  psa10: 0, psa10_real: false, psa10_x: 0, shop_trade: 0, shop_cash: 0,
                  net_unit: 0, net_pct: 0, grade_flag: false, grade_gap: 0, grade_reason: "",
-                 keep: false, tags: [], image_url: null });
+                 keep: false, tags: [], image_url: gimg });
       continue;
     }
 
     const route = routeRow(category, setName, rarity, name, variance, number, effective);
-    const img = category === "Pokemon" ? await pokemonImageUrl(setName, number) : null;
+    let img = null;
+    if (category === "Pokemon") img = await pokemonImageUrl(setName, number);
+    else if (category === "Magic: The Gathering") img = mtgImageUrl(name);
     out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance,
                grade: "", qty, price: effective, market_price: market, condition,
                ...route, flags: [...route.flags, ...xflags], psa10_real: false,
