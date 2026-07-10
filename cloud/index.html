@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pokémon Sell Cockpit</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>🃏 Pokémon Sell Cockpit</h1>
+    <p class="subtitle">Liquidate piece-by-piece for the highest % back · synced from your local tool.</p>
+  </header>
+
+  <main>
+    <!-- Auth -->
+    <section id="auth-section" class="card hidden">
+      <h2>Sign in</h2>
+      <div class="auth-form">
+        <input type="email" id="auth-email" placeholder="email" autocomplete="username" />
+        <input type="password" id="auth-pass" placeholder="password" autocomplete="current-password" />
+        <div class="actions">
+          <button type="button" id="signin-btn">Sign in</button>
+          <button type="button" id="signup-btn" class="secondary">Create account</button>
+        </div>
+        <p id="auth-status" class="status"></p>
+      </div>
+    </section>
+
+    <!-- Cockpit -->
+    <section id="sell-section" class="card hidden">
+      <div class="review-header">
+        <div>
+          <h2>🛒 Sell Cockpit</h2>
+          <p id="sell-meta" class="meta">Loading…</p>
+        </div>
+        <div class="review-nav">
+          <div class="view-toggle">
+            <button type="button" id="view-grid" class="vt active" title="Grid view">▦</button>
+            <button type="button" id="view-list" class="vt" title="List view">☰</button>
+          </div>
+          <label class="filter-label">Sort
+            <select id="sell-sort">
+              <option value="value">Value</option>
+              <option value="psa10x">PSA-10 ×</option>
+              <option value="netpct">Net %</option>
+            </select>
+          </label>
+          <input type="search" id="sell-search" placeholder="Search name or set…" />
+          <button type="button" id="signout-btn" class="secondary">Sign out</button>
+        </div>
+      </div>
+
+      <div id="sell-summary" class="sell-summary"></div>
+      <div id="sell-tabs" class="sell-tabs"></div>
+
+      <div id="sell-filters" class="sell-filters">
+        <select id="f-channel" class="f-sel" title="Channel">
+          <option value="">All channels</option>
+          <option value="eBay (auction)">eBay auction</option>
+          <option value="eBay (fixed)">eBay fixed</option>
+          <option value="TCGplayer">TCGplayer</option>
+          <option value="LCS">LCS (shop)</option>
+        </select>
+        <select id="f-band" class="f-sel" title="Price band">
+          <option value="">All prices</option>
+          <option value="o50">$50+</option>
+          <option value="5_50">$5–50</option>
+          <option value="1_5">$1–5</option>
+          <option value="u1">&lt;$1</option>
+        </select>
+        <button class="chip" data-filter="notnm" data-value="notnm">🔍 Not NM <span id="notnm-count"></span></button>
+        <button class="chip" data-filter="grade" data-value="grade">◆ Grade</button>
+        <button class="chip" data-filter="oc" data-value="oc">◎ OC</button>
+        <button class="chip" data-filter="shop" data-value="shop">🏪</button>
+        <button class="chip" data-filter="keepers" data-value="keepers">★</button>
+        <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
+      </div>
+
+      <div id="sell-grid" class="sell-grid"></div>
+      <p id="sell-empty" class="empty-state hidden">No cards. Run <code>python3 app/sell.py push</code> from the local tool to sync your inventory.</p>
+
+      <div id="card-modal" class="modal hidden">
+        <div class="modal-backdrop" id="modal-backdrop"></div>
+        <div class="modal-panel" id="modal-panel"></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

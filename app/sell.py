@@ -106,6 +106,18 @@ def cmd_radar(args) -> None:
                         for r in rej if r["gate_failures"])[:400])
 
 
+def cmd_push(args) -> None:
+    import cloudsync
+    r = cloudsync.push()
+    print(f"pushed {r['pushed']} cards to the cloud cockpit as {r['user']}")
+
+
+def cmd_pull(args) -> None:
+    import cloudsync
+    r = cloudsync.pull()
+    print(f"pulled {r['pulled']} rows; applied tags/condition/keep to {r['applied']} cards")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Pokemon-cards selling-ops CLI")
     p.add_argument("--export", default=DEFAULT_EXPORT,
@@ -116,6 +128,8 @@ def main() -> None:
         ("lots", cmd_lots, "[D] bulk-lot plan + eBay warm-up picks"),
         ("reprice", cmd_reprice, "[A] refresh prices, re-rank, flag movers"),
         ("radar", cmd_radar, "[C] eBay deal radar"),
+        ("push", cmd_push, "sync inventory up to the cloud cockpit (Supabase)"),
+        ("pull", cmd_pull, "bring cloud tag/condition edits back into local"),
     ]:
         sp = sub.add_parser(name, help=help_)
         sp.set_defaults(func=fn)
