@@ -197,7 +197,8 @@ function tile(r, holdsTab) {
         <button class="qb ${r.keep ? "on" : ""}" data-act="keep" title="Keep">★</button>
         <button class="qb ${notNM(r) ? "on" : ""}" data-act="notnm" title="Not NM → conditioning queue">!NM</button>
         <button class="qb ${offC(r) ? "on" : ""}" data-act="oc" title="Off-center">◎</button>
-        <button class="qb ${(r.tags || []).includes("shop") ? "on" : ""}" data-act="shop" title="Shop drop-off">🏪</button>
+        <button class="qb ${(r.tags || []).includes("to-grade") ? "on" : ""}" data-act="gradepile" title="Add to grading pile">◆</button>
+        <button class="qb ${(r.tags || []).includes("shop") ? "on" : ""}" data-act="shop" title="Shop drop-off pile">🏪</button>
       </div>
     </div>`;
   el.addEventListener("click", (ev) => onClick(ev, r));
@@ -217,8 +218,32 @@ async function onClick(ev, r) {
   if (act === "keep") await save(r, { keep: !r.keep });
   else if (act === "notnm") await toggleTag(r, "not-nm");
   else if (act === "oc") await toggleTag(r, "off-center");
+  else if (act === "gradepile") await toggleTag(r, "to-grade");
   else if (act === "shop") await toggleTag(r, "shop");
   renderSummary(); renderTabs(); render();
+}
+
+// ── LCS drop-off price sheet (browser CSV download of 🏪-tagged cards) ──────
+function lcsCsv() {
+  const picks = rows.filter((r) => (r.tags || []).includes("shop") && !r.keep)
+    .sort((a, b) => b.price - a.price);
+  if (!picks.length) { alert("No cards tagged 🏪 yet — use the quick-tag on the cards you're bringing in."); return; }
+  const q = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
+  let tv = 0, tt = 0, tc = 0;
+  const lines = ["Card,Set,Number,Condition,Your Value,Trade (store credit),Cash"];
+  for (const r of picks) {
+    const v = +r.price || 0, t = +r.shop_trade || 0, c = +r.shop_cash || 0;
+    tv += v; tt += t; tc += c;
+    lines.push([q(r.name), q(r.set_name), q(r.number), q(r.condition || "NM"),
+                v.toFixed(2), t.toFixed(2), c.toFixed(2)].join(","));
+  }
+  lines.push(["TOTAL", "", "", "", tv.toFixed(2), tt.toFixed(2), tc.toFixed(2)].join(","));
+  const blob = new Blob([lines.join("\r\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "lcs_dropoff_" + new Date().toISOString().slice(0, 10) + ".csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ── Modal ───────────────────────────────────────────────────────────────────
@@ -252,6 +277,8 @@ function openCard(r) {
           <button class="m-btn ${r.keep ? "on" : ""}" data-mact="keep">${r.keep ? "★ Keeper" : "☆ Keep"}</button>
           <button class="m-btn ${offC(r) ? "on" : ""}" data-mact="oc">◎ Off-center</button>
           <button class="m-btn ${notNM(r) ? "on" : ""}" data-mact="notnm">🔍 Not NM</button>
+          <button class="m-btn ${(r.tags || []).includes("to-grade") ? "on" : ""}" data-mact="gradepile">◆ To grade</button>
+          <button class="m-btn ${(r.tags || []).includes("shop") ? "on" : ""}" data-mact="shop">🏪 Drop-off</button>
         </div>
         <p class="dim" style="font-size:12px">Photos + shop manifest live in the local tool · edits here sync back on <code>sell.py pull</code>.</p>
       </div>
@@ -265,6 +292,8 @@ function openCard(r) {
     if (act === "keep") await save(r, { keep: !r.keep });
     else if (act === "oc") await toggleTag(r, "off-center");
     else if (act === "notnm") await toggleTag(r, "not-nm");
+    else if (act === "gradepile") await toggleTag(r, "to-grade");
+    else if (act === "shop") await toggleTag(r, "shop");
     renderSummary(); renderTabs(); render(); openCard(r);
   };
   const cs = $("#m-cond");
@@ -320,6 +349,7 @@ async function importCsv(file) {
 
 // ── Wiring ──────────────────────────────────────────────────────────────────
 $("#import-btn").addEventListener("click", () => $("#import-file").click());
+$("#lcs-btn").addEventListener("click", lcsCsv);
 $("#import-file").addEventListener("change", () => {
   const f = $("#import-file").files[0];
   if (f) importCsv(f);
