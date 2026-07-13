@@ -1,6 +1,7 @@
-/* Sell Cockpit (cloud) — self-contained collection cockpit on Supabase.
-   Import Collectr CSV → tabs/piles → tag, condition, photograph, price,
-   export LCS + TCGplayer sheets. Data is per-user (RLS). */
+/* SELL COCKPIT — "THE LINE": Decide → Prep → Cash Out (+ Browse).
+   The structure answers "what do I do next": a computed Next-Up CTA, filing
+   quick-actions on every card, exports living inside their Cash Out lanes.
+   Vanilla JS + Supabase. ?demo=1 loads a sample collection with no writes. */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition } from "./engine.js";
 
@@ -8,147 +9,290 @@ const SUPABASE_URL = "https://xmcohwtftpmnanootpia.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY29od3RmdHBtbmFub290cGlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODU5NTcsImV4cCI6MjA5OTI2MTk1N30.YVOa8JBdaJH9aXXsyUjOhdwKiohj4SZ6rVia36KfP0k";
 const FN_PRICES = SUPABASE_URL + "/functions/v1/prices";
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
+const DEMO = new URLSearchParams(location.search).has("demo");
 
 const $ = (s) => document.querySelector(s);
-const RENDER_CAP = 300;
+const CAP = 300;
 const COND_FACTORS = { NM: 1.0, LP: 0.9, MP: 0.75, HP: 0.6, DMG: 0.5 };
-const CHANNEL_CLASS = { "eBay (auction)": "ch-ebay-auction", "eBay (fixed)": "ch-ebay-fixed",
-                        "TCGplayer": "ch-tcg", "LCS": "ch-bulk" };
+const CONDS = ["NM", "LP", "MP", "HP", "DMG"];
+const GAMES = [["pkmn", "Pokemon"], ["mtg", "MTG"], ["ygo", "Yu-Gi-Oh"]];
+const DECISIONS = [
+  { key: "sell",  icon: "i-sell",  label: "Sell",  aria: "Sell as-is" },
+  { key: "keep",  icon: "i-keep",  label: "Keep",  aria: "Keep — personal collection" },
+  { key: "grade", icon: "i-grade", label: "Grade", aria: "Grade first" },
+  { key: "shop",  icon: "i-shop",  label: "Shop",  aria: "Shop drop-off" },
+  { key: "check", icon: "i-check", label: "Check", aria: "Check condition" },
+];
+const DKEY_TAG = { sell: "sell", grade: "to-grade", shop: "shop", check: "not-nm" };
+
+let rows = [];
+let station = "decide";
+let browseBucket = null;
+let gameChip = localStorage.getItem("gameChip") || "";
+let viewMode = localStorage.getItem("viewMode") || "grid";
+let sortKey = "value";
+let filtersOpen = false;
+const filters = { channel: "", band: "", grade: "", oc: "", tag: "", search: "" };
+let kfocus = -1;
+let undoState = null;
+let toastTimer = null;
+
+const money = (n) => "$" + Math.round(n).toLocaleString();
+const money2 = (n) => "$" + (+n).toFixed(2);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ico = (name, size = "") => `<svg class="ic ${size}" aria-hidden="true"><use href="#${name}"/></svg>`;
+const hasTag = (r, t) => (r.tags || []).includes(t);
+const offC = (r) => hasTag(r, "off-center");
+const isRaw = (b) => ["pkmn", "mtg", "ygo"].includes(b);
+const decisionOf = (r) => r.keep ? "keep" : hasTag(r, "sell") ? "sell" : hasTag(r, "to-grade") ? "grade" : hasTag(r, "shop") ? "shop" : hasTag(r, "not-nm") ? "check" : null;
+const decided = (r) => decisionOf(r) !== null;
 const SORTS = {
   value: (a, b) => b.price - a.price,
+  market: (a, b) => b.market_price - a.market_price,
   psa10x: (a, b) => (b.psa10_x || 0) - (a.psa10_x || 0),
   netpct: (a, b) => (b.net_pct || 0) - (a.net_pct || 0),
 };
-// Category tabs show UNDECIDED cards only; piles collect what you've filed.
-const CAT_TABS = [["pkmn", "Pkmn"], ["mtg", "MTG"], ["ygo", "YGO"],
-                  ["graded", "Graded"], ["sealed", "Sealed"]];
-const PILE_TABS = [["p_keep", "★ Keep"], ["p_grade", "◆ Grade"],
-                   ["p_shop", "🏪 Shop"], ["p_check", "🔍 Check"]];
 
-let rows = [];
-let tab = localStorage.getItem("sellTab") || "pkmn";
-const filters = { channel: "", band: "", grade: "", oc: "", tag: "", search: "" };
-let sortKey = "value";
-let viewMode = localStorage.getItem("sellViewMode") || "grid";
+// ── Session tally ────────────────────────────────────────────────────────────
+const tallyKey = () => "decided-" + new Date().toISOString().slice(0, 10);
+const tally = () => parseInt(localStorage.getItem(tallyKey()) || "0");
+const bumpTally = (d) => localStorage.setItem(tallyKey(), Math.max(0, tally() + d));
 
-const money = (n) => "$" + Math.round(n).toLocaleString();
-const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const hasTag = (r, t) => (r.tags || []).includes(t);
-const notNM = (r) => hasTag(r, "not-nm");
-const offC = (r) => hasTag(r, "off-center");
-const hasPhotos = (r) => (r.photos || []).length > 0;
-// A card is "decided" once it's filed into any pile — raw tabs show the rest.
-const decided = (r) => r.keep || hasTag(r, "to-grade") || hasTag(r, "shop") || notNM(r);
-const isRawBucket = (b) => ["pkmn", "mtg", "ygo"].includes(b);
-
-// ── Auth ────────────────────────────────────────────────────────────────────
-async function boot() {
-  const { data: { session } } = await sb.auth.getSession();
-  if (session) { showCockpit(); } else { showAuth(); }
-  sb.auth.onAuthStateChange((_e, s) => { if (s) showCockpit(); else showAuth(); });
-}
-function showAuth() {
-  $("#auth-section").classList.remove("hidden");
-  $("#sell-section").classList.add("hidden");
-}
-function showCockpit() {
-  $("#auth-section").classList.add("hidden");
-  $("#sell-section").classList.remove("hidden");
-  load();
-}
-async function signIn() {
-  const { error } = await sb.auth.signInWithPassword({ email: $("#auth-email").value.trim(), password: $("#auth-pass").value });
-  $("#auth-status").textContent = error ? error.message : "";
-}
-async function signUp() {
-  const { error } = await sb.auth.signUp({ email: $("#auth-email").value.trim(), password: $("#auth-pass").value });
-  $("#auth-status").textContent = error ? error.message : "Account created — check your email to confirm, then sign in.";
-}
-
-// ── Data ────────────────────────────────────────────────────────────────────
+// ── Data ─────────────────────────────────────────────────────────────────────
 async function load() {
-  $("#sell-meta").textContent = "Loading…";
+  if (DEMO) {
+    const { DEMO_ROWS } = await import("./demo.js");
+    rows = DEMO_ROWS;
+    renderAll();
+    return;
+  }
   rows = [];
   for (let from = 0; from < 20000; from += 1000) {
-    // Secondary sort on id keeps pagination stable — price alone has thousands
-    // of ties, which made pages overlap and cards appear duplicated.
     const { data, error } = await sb.from("cards").select("*")
       .order("price", { ascending: false }).order("id", { ascending: true })
       .range(from, from + 999);
-    if (error) { $("#sell-meta").textContent = error.message; return; }
+    if (error) { setStatus(error.message); return; }
     rows.push(...(data || []));
     if (!data || data.length < 1000) break;
   }
-  renderSummary(); renderTabs(); render();
+  renderAll();
 }
 
 async function save(row, patch) {
   Object.assign(row, patch);
-  await sb.from("cards").update(patch).eq("id", row.id);
+  if (!DEMO) await sb.from("cards").update(patch).eq("id", row.id);
 }
 
-// ── Summary + tabs ──────────────────────────────────────────────────────────
-function pileOf(r) {
-  if (r.keep) return "p_keep";
-  if (hasTag(r, "to-grade")) return "p_grade";
-  if (hasTag(r, "shop")) return "p_shop";
-  if (notNM(r)) return "p_check";
-  return null;
+// ── Toast ────────────────────────────────────────────────────────────────────
+function toast(msg, undoFn = null, ms = undoFn ? 5000 : 3000) {
+  document.getElementById("toast")?.remove();
+  clearTimeout(toastTimer);
+  const t = document.createElement("div");
+  t.id = "toast";
+  t.innerHTML = `<span>${esc(msg)}</span>${undoFn ? `<button id="toast-undo">Undo</button>` : ""}`;
+  document.body.appendChild(t);
+  if (undoFn) $("#toast-undo").addEventListener("click", () => { t.remove(); undoFn(); });
+  toastTimer = setTimeout(() => t.remove(), ms);
 }
 
-function summaryOf() {
-  const sellable = rows.filter((r) => isRawBucket(r.bucket) && !r.keep);
+function setStatus(msg) {
+  const el = $("#nu-status");
+  if (el) el.textContent = msg;
+  else { const m = $(".nu-msg"); if (m) m.textContent = msg; }
+}
+
+// ── Filing ───────────────────────────────────────────────────────────────────
+const DLABEL = { sell: "Sell", keep: "Keep", grade: "Grade", shop: "Shop", check: "Condition check" };
+async function fileCard(r, dkey, el = null) {
+  const prev = { keep: r.keep, tags: [...(r.tags || [])] };
+  const was = decisionOf(r);
+  const clean = (r.tags || []).filter((t) => !["sell", "to-grade", "shop", "not-nm"].includes(t));
+  let patch;
+  if (was === dkey) {                       // toggle off → back to undecided
+    patch = { keep: false, tags: clean };
+  } else if (dkey === "keep") {
+    patch = { keep: true, tags: clean };
+  } else {
+    patch = { keep: false, tags: [...clean, DKEY_TAG[dkey]] };
+  }
+  if (el) { el.classList.add("filing"); await new Promise((res) => setTimeout(res, 150)); }
+  await save(r, patch);
+  const now = decisionOf(r);
+  if (!was && now) bumpTally(1);
+  if (was && !now) bumpTally(-1);
+  renderAll();
+  if (now) toast(`Filed to ${DLABEL[dkey]}`, async () => { await save(r, prev); if (!was) bumpTally(-1); renderAll(); });
+}
+
+// ── Next-Up ladder ───────────────────────────────────────────────────────────
+function stats() {
+  const raw = rows.filter((r) => isRaw(r.bucket));
+  const undecided = raw.filter((r) => !decided(r));
+  const sellRows = raw.filter((r) => hasTag(r, "sell"));
+  const checkRows = raw.filter((r) => hasTag(r, "not-nm"));
+  const photosNeeded = sellRows.filter((r) => r.channel && r.channel.startsWith("eBay") && (r.photos || []).length < 2);
+  const tcgpReady = sellRows.filter((r) => r.channel === "TCGplayer" || hasTag(r, "tcgplayer"));
+  const shopRows = raw.filter((r) => hasTag(r, "shop"));
+  const ebayReady = sellRows.filter((r) => r.channel && r.channel.startsWith("eBay"));
+  const sellable = raw.filter((r) => !r.keep);
   const mkt = sellable.reduce((a, r) => a + r.price * (r.qty || 1), 0);
   const net = sellable.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
-  const buckets = {};
-  for (const [k] of CAT_TABS) {
-    const rs = rows.filter((r) => r.bucket === k && (!isRawBucket(k) || !decided(r)));
-    buckets[k] = { market: rs.reduce((a, r) => a + r.price * (isRawBucket(k) ? (r.qty || 1) : 1), 0), count: rs.length };
-  }
-  for (const [k] of PILE_TABS) {
-    const rs = rows.filter((r) => isRawBucket(r.bucket) && pileOf(r) === k);
-    buckets[k] = { market: rs.reduce((a, r) => a + r.price * (r.qty || 1), 0), count: rs.length };
-  }
-  const keepers = rows.filter((r) => r.keep);
-  return { mkt, net, pct: mkt ? net / mkt : 0, buckets,
-           grade: rows.filter((r) => r.grade_flag && !offC(r)).length,
-           keepers: keepers.length, keepersVal: keepers.reduce((a, r) => a + r.price * (r.qty || 1), 0) };
+  const keepers = raw.filter((r) => r.keep);
+  return { raw, undecided, sellRows, checkRows, photosNeeded, tcgpReady, shopRows, ebayReady, mkt, net,
+           keepers, keepersVal: keepers.reduce((a, r) => a + r.price * (r.qty || 1), 0),
+           gradePile: raw.filter((r) => hasTag(r, "to-grade")) };
 }
 
-function renderSummary() {
-  const s = summaryOf();
-  $("#sell-summary").innerHTML = `
-    <div class="sum-head"><div><span class="sum-pct">${Math.round(s.pct * 100)}%</span> recovered
-      <span class="dim">· net ${money(s.net)} of ${money(s.mkt)} raw market</span></div></div>
-    <div class="sum-notes">
-      <span class="sum-note grade">◆ ${s.grade} grade-first candidates</span>
-      <span class="sum-note">★ ${s.keepers} keepers (${money(s.keepersVal)})</span>
+function ladder(s) {
+  const rungs = [];
+  if (!rows.length) rungs.push({ label: "Import your collection", go: () => $("#import-file").click() });
+  if (s.undecided.length) rungs.push({ label: "Start deciding", go: () => nav("decide") });
+  if (s.checkRows.length) rungs.push({ label: `Set ${s.checkRows.length} condition${s.checkRows.length > 1 ? "s" : ""}`, go: () => nav("prep") });
+  if (s.photosNeeded.length) rungs.push({ label: `Photograph ${s.photosNeeded.length} card${s.photosNeeded.length > 1 ? "s" : ""}`, go: () => nav("prep") });
+  if (s.tcgpReady.length) rungs.push({ label: "Export TCGplayer sheet", go: () => nav("cashout") });
+  if (s.shopRows.length) rungs.push({ label: "Download drop-off sheet", go: () => nav("cashout") });
+  if (s.ebayReady.length) rungs.push({ label: `List ${s.ebayReady.length} on eBay`, go: () => nav("cashout") });
+  if (!rungs.length) rungs.push({ label: "Line is clear", go: () => nav("browse") });
+  return rungs;
+}
+
+function renderStrip() {
+  const s = stats();
+  const rungs = ladder(s);
+  const total = s.raw.length, done = total - s.undecided.length;
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  $("#hd-stat").innerHTML = rows.length ? `<div class="lbl">projected net</div><div class="val num">${money(s.net)}</div>` : "";
+  $("#next-up").innerHTML = `
+    <div class="nu-count num">${s.undecided.length}</div>
+    <div class="nu-body">
+      <div class="nu-msg" id="nu-status">${rows.length ? (s.undecided.length ? "cards are waiting on you." : "Nothing waiting — work the line.") : "No collection yet."}</div>
+      <div class="nu-bar"><i style="width:${pct}%"></i></div>
+      <div class="nu-sub num">${done.toLocaleString()} of ${total.toLocaleString()} decided</div>
+    </div>
+    <div class="nu-right">
+      <div class="nu-actions">
+        ${rungs.slice(1, 3).map((r, i) => `<button class="nu-chip" data-rung="${i + 1}">${esc(r.label)}</button>`).join("")}
+        <button class="cta" id="nu-cta">${esc(rungs[0].label)}</button>
+      </div>
+      <div class="nu-session num">${tally()} decided this session</div>
     </div>`;
+  $("#nu-cta").addEventListener("click", rungs[0].go);
+  document.querySelectorAll(".nu-chip").forEach((b) =>
+    b.addEventListener("click", () => rungs[parseInt(b.dataset.rung)].go()));
 }
 
-function renderTabs() {
-  const s = summaryOf();
-  const btn = ([key, label]) => {
-    const b = s.buckets[key] || { market: 0, count: 0 };
-    return `<button class="tab ${tab === key ? "active" : ""}" data-tab="${key}">
-      ${label} <span class="tab-val">${money(b.market)}</span><span class="tab-ct">${b.count}</span></button>`;
-  };
-  $("#sell-tabs").innerHTML =
-    CAT_TABS.map(btn).join("") +
-    `<span class="tab-divider"></span>` +
-    PILE_TABS.map(btn).join("");
-  document.querySelectorAll("#sell-tabs .tab").forEach((b) =>
-    b.addEventListener("click", () => { tab = b.dataset.tab; localStorage.setItem("sellTab", tab); renderTabs(); render(); }));
+// ── Stations nav + router ────────────────────────────────────────────────────
+function nav(st, bucket = null) {
+  location.hash = bucket ? `#/browse/${bucket}` : `#/${st}`;
+}
+function applyHash() {
+  const h = location.hash.replace(/^#\//, "");
+  const [st, bucket] = h.split("/");
+  station = ["decide", "prep", "cashout", "browse"].includes(st) ? st : "decide";
+  browseBucket = station === "browse" ? (bucket || null) : null;
+  localStorage.setItem("lastRoute", location.hash);
+  renderAll();
 }
 
-function passes(r) {
-  const pile = pileOf(r);
-  if (tab.startsWith("p_")) {
-    if (!isRawBucket(r.bucket) || pile !== tab) return false;
-  } else {
-    if (r.bucket !== tab) return false;
-    if (isRawBucket(tab) && pile) return false;   // filed cards leave the raw tab
+function renderStations() {
+  const s = stats();
+  const readyNet = s.sellRows.concat(s.shopRows).reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
+  const prepCount = s.checkRows.length + s.gradePile.length + s.photosNeeded.length;
+  const defs = [
+    ["decide", "Decide", "i-check", `${s.undecided.length}`],
+    ["prep", "Prep", "i-camera", `${prepCount}`],
+    ["cashout", "Cash Out", "i-export", money(readyNet), true],
+    ["browse", "Browse", "i-grid", ""],
+  ];
+  $("#stations").innerHTML = defs.map(([key, label, icon, pill, isMoney]) =>
+    `<button class="${key === station ? "active" : ""} ${key === "browse" ? "browse" : ""}" data-st="${key}">
+      ${ico(icon)}<span>${label}</span>${pill ? `<span class="st-pill num ${isMoney ? "money" : ""}">${pill}</span>` : ""}
+    </button>`).join("");
+  document.querySelectorAll("#stations button").forEach((b) =>
+    b.addEventListener("click", () => nav(b.dataset.st)));
+}
+
+function renderAll() {
+  renderStrip();
+  renderStations();
+  ["decide", "prep", "cashout", "browse"].forEach((k) =>
+    $(`#view-${k}`).classList.toggle("hidden", k !== station));
+  if (station === "decide") renderDecide();
+  else if (station === "prep") renderPrep();
+  else if (station === "cashout") renderCashout();
+  else renderBrowse();
+}
+
+// ── Shared card pieces ───────────────────────────────────────────────────────
+function metaLine(r) {
+  if (r.bucket === "pkmn" && (r.psa10_x || 0) >= 4) {
+    const hot = r.psa10_x >= 8;
+    return `<div class="t-meta ${hot ? "hot" : ""} num">PSA 10 ${r.psa10_real ? "" : "~"}${money(r.psa10)} · ${r.psa10_x}×${hot ? " — don't sell raw" : ""}</div>`;
   }
+  return `<div class="t-meta num">${esc((r.channel || "").replace(" (", " ").replace(")", ""))} · nets <span class="net">${money(r.net_unit || 0)}</span></div>`;
+}
+function decideRow(r, compact = false) {
+  const cur = decisionOf(r);
+  return `<div class="decide-row" role="group" aria-label="File this card">` + DECISIONS.map((d) =>
+    `<button data-file="${d.key}" class="${cur === d.key ? "on" : ""}" title="${d.aria}" aria-label="${d.aria}">${ico(d.icon, compact ? "s" : "")}</button>`).join("") + `</div>`;
+}
+function imgTag(r, cls = "") {
+  return r.image_url
+    ? `<img ${cls ? `class="${cls}"` : ""} loading="lazy" src="${r.image_url}" onerror="this.classList.add('broken')" alt="">`
+    : `<div class="noimg">${r.bucket === "sealed" ? ico("i-box", "l") : ico("i-grid")}</div>`;
+}
+function badges(r) {
+  const b = [];
+  if (hasTag(r, "not-nm")) b.push(`<span class="tb warn" title="Awaiting condition check">${ico("i-check", "s")}</span>`);
+  if (offC(r)) b.push(`<span class="tb" title="Off-center">${ico("i-offcenter", "s")}</span>`);
+  if ((r.photos || []).length) b.push(`<span class="tb" title="Has photos">${ico("i-camera", "s")}</span>`);
+  return b.join("");
+}
+function wireFileButtons(el, r) {
+  el.querySelectorAll("[data-file]").forEach((b) =>
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); fileCard(r, b.dataset.file, el.closest(".tile")); }));
+}
+
+function tile(r, showPile = false) {
+  const el = document.createElement("div");
+  el.className = "tile";
+  const cond = r.condition && r.condition !== "NM" ? `<span class="cond">${r.condition}</span>` : "";
+  const fl = [];
+  if (r.grade_flag && !offC(r)) fl.push(`<span class="fl amber">Grade +${money(r.grade_gap || 0)}</span>`);
+  if ((r.flags || []).includes("japanese")) fl.push(`<span class="fl">JP</span>`);
+  if ((r.flags || []).some((f) => String(f).startsWith("ebay-authenticity"))) fl.push(`<span class="fl">$250+ auth</span>`);
+  const pile = decisionOf(r);
+  el.innerHTML = `
+    <div class="tile-img">${imgTag(r)}<div class="tile-badges">${badges(r)}</div></div>
+    <div class="tile-body">
+      <div class="t-name">${esc(r.name)}</div>
+      <div class="t-sub">${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}</div>
+      <div class="t-price"><span class="p num">${money2(r.price)}</span>${(r.qty || 1) > 1 ? `<span class="q num">×${r.qty}</span>` : ""}${cond}</div>
+      ${metaLine(r)}
+      ${fl.length || (showPile && pile) ? `<div class="t-flags">${showPile && pile ? `<span class="pile-chip">${DLABEL[pile]}</span>` : ""}${fl.slice(0, 2).join("")}</div>` : ""}
+    </div>
+    ${isRaw(r.bucket) ? decideRow(r) : ""}`;
+  el.querySelector(".tile-body").addEventListener("click", () => openCard(r));
+  el.querySelector(".tile-img").addEventListener("click", () => openCard(r));
+  wireFileButtons(el, r);
+  return el;
+}
+
+function listRow(r) {
+  const el = document.createElement("div");
+  el.className = "rowc";
+  el.innerHTML = `
+    ${imgTag(r)}
+    <div class="r-main"><div class="r-name">${esc(r.name)}</div><div class="r-sub">${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}</div></div>
+    <div class="r-price num">${money2(r.price)}${(r.qty || 1) > 1 ? ` <span class="dim">×${r.qty}</span>` : ""}</div>
+    ${decideRow(r, true)}`;
+  el.addEventListener("click", () => openCard(r));
+  wireFileButtons(el, r);
+  return el;
+}
+
+// ── DECIDE ───────────────────────────────────────────────────────────────────
+function passes(r) {
   if (filters.channel && r.channel !== filters.channel) return false;
   if (filters.band && r.band !== filters.band) return false;
   if (filters.grade && !r.grade_flag) return false;
@@ -160,295 +304,517 @@ function passes(r) {
   }
   return true;
 }
+const activeFilterCount = () => ["channel", "band", "grade", "oc", "tag"].filter((k) => filters[k]).length;
 
-function render() {
-  const holdsTab = tab === "graded" || tab === "sealed";
-  $("#sell-filters").style.display = holdsTab ? "none" : "";
-  const shown = rows.filter(passes).sort(SORTS[sortKey] || SORTS.value);
-  const val = shown.reduce((a, r) => a + r.price * (holdsTab ? 1 : r.qty || 1), 0);
-  $("#sell-meta").textContent = `${shown.length} cards · ${money(val)}` +
-    (shown.length > RENDER_CAP ? ` · showing first ${RENDER_CAP}` : "");
-  $("#sell-empty").classList.toggle("hidden", shown.length > 0);
-  const grid = $("#sell-grid");
-  grid.className = "sell-grid" + (viewMode === "list" ? " list-view" : "");
-  grid.innerHTML = "";
-  const frag = document.createDocumentFragment();
-  shown.slice(0, RENDER_CAP).forEach((r) => frag.appendChild(tile(r, holdsTab)));
-  grid.appendChild(frag);
-}
+function renderDecide() {
+  const v = $("#view-decide");
+  const s = stats();
+  if (!rows.length) { v.innerHTML = ""; v.appendChild(firstRun()); return; }
 
-function flagChip(f) {
-  if (String(f).startsWith("tcgp-tracking")) return `<span class="flag warn">📦 $50+</span>`;
-  if (String(f).startsWith("ebay-authenticity")) return `<span class="flag lock">🔒 $250+</span>`;
-  if (f === "scarce") return `<span class="flag scarce">✦ scarce</span>`;
-  if (f === "japanese") return `<span class="flag">🇯🇵 JP</span>`;
-  return `<span class="flag">${esc(f)}</span>`;
-}
+  const pool = s.undecided.filter((r) => (!gameChip || r.bucket === gameChip) && passes(r));
+  pool.sort(SORTS[sortKey] || SORTS.value);
 
-function psaLine(r) {
-  if (r.bucket !== "pkmn" || !r.psa10) {
-    return `<div class="tile-net">net $${Math.round(r.net_unit || 0)} · <b>${Math.round((r.net_pct || 0) * 100)}%</b> back</div>`;
+  const chips = GAMES.map(([key, label]) => {
+    const g = s.undecided.filter((r) => r.bucket === key);
+    const val = g.reduce((a, r) => a + r.price * (r.qty || 1), 0);
+    return `<button class="gchip ${gameChip === key ? "active" : ""}" data-chip="${key}">${label}
+      <span class="v num">${money(val)}</span><span class="c num">${g.length}</span></button>`;
+  }).join("");
+
+  const staleBanner = priceBannerHtml(s);
+  v.innerHTML = `
+    ${DEMO ? "" : staleBanner}
+    <div class="chips"><button class="gchip ${!gameChip ? "active" : ""}" data-chip="">All games</button>${chips}</div>
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Search name or set…" value="${esc(filters.search)}" />
+      <select id="sortsel">
+        <option value="value" ${sortKey === "value" ? "selected" : ""}>Highest value</option>
+        <option value="psa10x" ${sortKey === "psa10x" ? "selected" : ""}>PSA-10 multiple</option>
+        <option value="netpct" ${sortKey === "netpct" ? "selected" : ""}>Best net %</option>
+      </select>
+      <div class="seg" role="group" aria-label="View">
+        <button id="vm-grid" class="${viewMode === "grid" ? "active" : ""}" aria-label="Grid view">${ico("i-grid")}</button>
+        <button id="vm-list" class="${viewMode === "list" ? "active" : ""}" aria-label="List view">${ico("i-list")}</button>
+      </div>
+      <button id="filter-btn" class="ghost">${ico("i-filter")} Filter ${activeFilterCount() ? `<span class="fbadge">${activeFilterCount()}</span>` : ""}</button>
+    </div>
+    <div id="filter-panel" class="filter-panel ${filtersOpen ? "" : "hidden"}">
+      <select id="f-channel">
+        <option value="">All channels</option><option value="eBay (auction)">eBay auction</option>
+        <option value="eBay (fixed)">eBay fixed</option><option value="TCGplayer">TCGplayer</option><option value="LCS">LCS (shop)</option>
+      </select>
+      <select id="f-band">
+        <option value="">All prices</option><option value="o50">$50+</option><option value="5_50">$5–50</option>
+        <option value="1_5">$1–5</option><option value="u1">Under $1</option>
+      </select>
+      <button class="tog-chip ${filters.grade ? "active" : ""}" id="f-grade">Grade candidates</button>
+      <button class="tog-chip ${filters.oc ? "active" : ""}" id="f-oc">Off-center</button>
+      <input type="text" id="f-tag" placeholder="tag…" value="${esc(filters.tag)}" style="width:120px" />
+    </div>
+    <div id="decide-body"></div>`;
+  $("#f-channel").value = filters.channel; $("#f-band").value = filters.band;
+
+  const body = $("#decide-body");
+  if (!pool.length) {
+    body.appendChild(decideEmpty(s));
+  } else if (viewMode === "list" && window.innerWidth >= 960) {
+    body.appendChild(renderTable(pool.slice(0, CAP)));
+  } else if (viewMode === "list") {
+    const wrap = document.createElement("div"); wrap.className = "rows";
+    pool.slice(0, CAP).forEach((r) => wrap.appendChild(listRow(r)));
+    body.appendChild(wrap);
+  } else {
+    const g = document.createElement("div"); g.className = "grid";
+    pool.slice(0, CAP).forEach((r) => g.appendChild(tile(r)));
+    body.appendChild(g);
   }
-  const hot = (r.psa10_x || 0) >= 8;
-  return `<div class="tile-psa ${hot ? "hot" : ""}">PSA10 ${r.psa10_real ? "" : "~"}${money(r.psa10)} · <b>${r.psa10_x}×</b>${hot ? " 🔥" : ""}</div>`;
+  if (pool.length > CAP) body.insertAdjacentHTML("beforeend",
+    `<div class="trunc-note num">Showing ${CAP} of ${pool.length.toLocaleString()} — sort or filter to reach the rest.</div>`);
+
+  // wiring
+  document.querySelectorAll("[data-chip]").forEach((b) => b.addEventListener("click", () => {
+    gameChip = b.dataset.chip; localStorage.setItem("gameChip", gameChip); renderDecide();
+  }));
+  $("#q").addEventListener("input", (e) => { filters.search = e.target.value.trim(); refreshBody(); });
+  $("#sortsel").addEventListener("change", (e) => { sortKey = e.target.value; renderDecide(); });
+  $("#vm-grid").addEventListener("click", () => { viewMode = "grid"; localStorage.setItem("viewMode", "grid"); renderDecide(); });
+  $("#vm-list").addEventListener("click", () => { viewMode = "list"; localStorage.setItem("viewMode", "list"); renderDecide(); });
+  $("#filter-btn").addEventListener("click", () => { filtersOpen = !filtersOpen; $("#filter-panel").classList.toggle("hidden", !filtersOpen); });
+  $("#f-channel").addEventListener("change", (e) => { filters.channel = e.target.value; refreshBody(); });
+  $("#f-band").addEventListener("change", (e) => { filters.band = e.target.value; refreshBody(); });
+  $("#f-grade").addEventListener("click", () => { filters.grade = !filters.grade; renderDecide(); });
+  $("#f-oc").addEventListener("click", () => { filters.oc = !filters.oc; renderDecide(); });
+  $("#f-tag").addEventListener("input", (e) => { filters.tag = e.target.value.trim(); refreshBody(); });
+
+  function refreshBody() { // re-render only the body (keeps focus in inputs)
+    const s2 = stats();
+    const pool2 = s2.undecided.filter((r) => (!gameChip || r.bucket === gameChip) && passes(r)).sort(SORTS[sortKey] || SORTS.value);
+    body.innerHTML = "";
+    if (!pool2.length) { body.appendChild(decideEmpty(s2)); return; }
+    if (viewMode === "list" && window.innerWidth >= 960) body.appendChild(renderTable(pool2.slice(0, CAP)));
+    else if (viewMode === "list") { const w = document.createElement("div"); w.className = "rows"; pool2.slice(0, CAP).forEach((r) => w.appendChild(listRow(r))); body.appendChild(w); }
+    else { const g = document.createElement("div"); g.className = "grid"; pool2.slice(0, CAP).forEach((r) => g.appendChild(tile(r))); body.appendChild(g); }
+    if (pool2.length > CAP) body.insertAdjacentHTML("beforeend", `<div class="trunc-note num">Showing ${CAP} of ${pool2.length.toLocaleString()} — sort or filter to reach the rest.</div>`);
+  }
 }
 
-function priceBlock(r) {
-  const qty = r.qty || 1;
-  return `<div class="price-row">
-    <span class="price-big">$${(+r.price).toFixed(2)}</span>
-    ${qty > 1 ? `<span class="qty-chip" title="Quantity">×${qty}</span>` : ""}
-    ${r.condition && r.condition !== "NM" ? `<span class="cond-chip">${r.condition}</span>` : ""}
-  </div>`;
-}
-
-function tile(r, holdsTab) {
+function decideEmpty(s) {
   const el = document.createElement("div");
-  el.className = "sell-tile" + (r.keep ? " is-keep" : "");
-  const img = r.image_url ? `<img loading="lazy" src="${r.image_url}" onerror="this.classList.add('broken')">`
-                          : `<div class="noimg">${holdsTab && r.bucket === "sealed" ? "📦" : "no image"}</div>`;
-  if (holdsTab) {
-    el.innerHTML = `
-      <div class="tile-img">${img}<div class="tile-badges"><span class="tb">${r.bucket === "graded" ? "🏆" : "📦"}</span></div></div>
-      <div class="tile-body">
-        <div class="t-details">
-          <div class="tile-name">${esc(r.name)}</div>
-          <div class="tile-sub">${esc(r.set_name)}${r.grade && r.grade !== "Ungraded" ? " · " + esc(r.grade) : ""}</div>
-          ${priceBlock(r)}
-        </div>
-        <div class="t-actions"><span class="badge ch-bulk">HOLD</span></div>
-      </div>`;
-    return el;
+  el.className = "empty";
+  if (gameChip && s.undecided.length) {
+    const other = GAMES.find(([k]) => k !== gameChip && s.undecided.some((r) => r.bucket === k));
+    const label = GAMES.find(([k]) => k === gameChip)?.[1] || gameChip;
+    el.innerHTML = `${ico("i-done", "l")}<h4>${label} is fully filed.</h4>
+      ${other ? `<p>${other[1]} has ${s.undecided.filter((r) => r.bucket === other[0]).length} waiting.</p><button class="ghost" id="jump-chip">Go to ${other[1]} ${ico("i-chev", "s")}</button>` : ""}`;
+    el.querySelector("#jump-chip")?.addEventListener("click", () => { gameChip = other[0]; renderDecide(); });
+  } else if (!s.undecided.length) {
+    const prepN = s.checkRows.length + s.gradePile.length + s.photosNeeded.length;
+    el.innerHTML = `${ico("i-done", "l")}<h4>Decide pile is clear.</h4>
+      <p>${prepN ? `${prepN} cards are in Prep — keep the line moving.` : "Everything's filed. Head to Cash Out."}</p>
+      <button class="ghost" id="go-next">Go to ${prepN ? "Prep" : "Cash Out"}</button>`;
+    el.querySelector("#go-next").addEventListener("click", () => nav(prepN ? "prep" : "cashout"));
+  } else {
+    el.innerHTML = `${ico("i-search", "l")}<h4>No cards match these filters.</h4><p>Clear a filter or two.</p>`;
   }
-  const badges =
-    (notNM(r) ? '<span class="tb notnm">🔍</span>' : "") +
-    (offC(r) ? '<span class="tb oc">◎</span>' : "") +
-    (hasPhotos(r) ? '<span class="tb cam">📷</span>' : "");
-  el.innerHTML = `
-    <div class="tile-img">${img}<div class="tile-badges">${badges}</div></div>
-    <div class="tile-body">
-      <div class="t-details">
-        <div class="tile-name">${r.keep ? "★ " : ""}${esc(r.name)}</div>
-        <div class="tile-sub">${esc(r.set_name)} · #${esc(r.number) || "—"}</div>
-        ${priceBlock(r)}
-        ${psaLine(r)}
-      </div>
-      <div class="t-actions">
-        <span class="badge ${CHANNEL_CLASS[r.channel] || ""}" title="${esc(r.channel_reason)}">${esc(r.channel)}</span>
-        <div class="tile-flags">${r.grade_flag && !offC(r) ? `<span class="flag grade">◆ +${money(r.grade_gap || 0)}</span>` : ""}${(r.flags || []).map(flagChip).join("")}</div>
-        <div class="quickbar">
-          <button class="qb ${r.keep ? "on" : ""}" data-act="keep" title="Keep (personal collection)">★</button>
-          <button class="qb ${notNM(r) ? "on" : ""}" data-act="notnm" title="Not NM → condition check pile">!NM</button>
-          <button class="qb ${offC(r) ? "on" : ""}" data-act="oc" title="Off-center (excludes grading)">◎</button>
-          <button class="qb ${hasTag(r, "to-grade") ? "on" : ""}" data-act="gradepile" title="Grading pile">◆</button>
-          <button class="qb ${hasTag(r, "shop") ? "on" : ""}" data-act="shop" title="Shop drop-off pile">🏪</button>
-        </div>
-      </div>
-    </div>`;
-  el.addEventListener("click", (ev) => onClick(ev, r));
   return el;
 }
 
-async function toggleTag(r, t) {
-  const has = hasTag(r, t);
-  const tags = has ? (r.tags || []).filter((x) => x !== t) : [...(r.tags || []), t];
-  await save(r, { tags });
+function firstRun() {
+  const el = document.createElement("div");
+  el.className = "dropzone-hero";
+  el.innerHTML = `<h3>Start with your Collectr export</h3>
+    <p>In Collectr, go to Profile → Export Collection, then drop the CSV here.<br>Tags, piles, and photos survive every re-import.</p>
+    <button class="cta" id="hero-pick">Choose export.csv</button>`;
+  el.querySelector("#hero-pick").addEventListener("click", () => $("#import-file").click());
+  ["dragover", "dragleave", "drop"].forEach((evName) => el.addEventListener(evName, (e) => {
+    e.preventDefault();
+    el.classList.toggle("drag", evName === "dragover");
+    if (evName === "drop" && e.dataTransfer.files[0]) importCsv(e.dataTransfer.files[0]);
+  }));
+  return el;
 }
 
-async function onClick(ev, r) {
-  const act = ev.target.dataset && ev.target.dataset.act;
-  if (!act) { openCard(r); return; }
-  ev.stopPropagation();
-  if (act === "keep") await save(r, { keep: !r.keep });
-  else if (act === "notnm") await toggleTag(r, "not-nm");
-  else if (act === "oc") await toggleTag(r, "off-center");
-  else if (act === "gradepile") await toggleTag(r, "to-grade");
-  else if (act === "shop") await toggleTag(r, "shop");
-  renderSummary(); renderTabs(); render();
+function priceBannerHtml(s) {
+  if (localStorage.getItem("banner-dismissed") === rows.length + "") return "";
+  const est = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10 && !r.psa10_real).length;
+  if (est <= 25) return "";
+  return `<div class="banner">${ico("i-refresh")}<span>${est} Pokemon cards still have estimated prices.</span>
+    <span class="bx"><button class="ghost" onclick="document.getElementById('prices-btn').click()">Refresh real prices</button>
+    <button class="ghost" onclick="localStorage.setItem('banner-dismissed','${rows.length}');this.closest('.banner').remove()" aria-label="Dismiss">${ico("i-x", "s")}</button></span></div>`;
 }
 
-// ── LCS drop-off price sheet ────────────────────────────────────────────────
-function downloadCsv(lines, filename) {
-  const blob = new Blob([lines.join("\r\n")], { type: "text/csv" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+// Desktop table
+const TCOLS = [
+  ["", null], ["Card", null], ["Cond", null], ["Qty", "num"], ["Mkt", "num", "market"],
+  ["Net", "num", "value"], ["Net %", "num", "netpct"], ["Route", null], ["PSA 10", "num"], ["×", "num", "psa10x"], ["File", null],
+];
+function renderTable(pool) {
+  const w = document.createElement("div");
+  w.className = "tablew";
+  const t = document.createElement("table");
+  t.className = "positions";
+  t.innerHTML = `<thead><tr>${TCOLS.map(([label, cls, sk]) =>
+    `<th class="${cls || ""}" ${sk ? `data-sort="${sk}"` : ""}>${label}${sk === sortKey ? ' <span class="arrow">▼</span>' : ""}</th>`).join("")}</tr></thead><tbody></tbody>`;
+  const tb = t.querySelector("tbody");
+  pool.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    if (i === kfocus) tr.classList.add("kfocus");
+    tr.innerHTML = `
+      <td>${r.image_url ? `<img class="th" loading="lazy" src="${r.image_url}" alt="">` : ""}</td>
+      <td><div class="cell-name">${esc(r.name)}</div><div class="cell-sub">${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}</div></td>
+      <td>${r.condition && r.condition !== "NM" ? `<span class="fl" style="border-color:var(--amber);color:var(--amber);font-size:11px;border:1px solid;border-radius:4px;padding:0 5px">${r.condition}</span>` : ""}</td>
+      <td class="num dim">${(r.qty || 1) > 1 ? "×" + r.qty : ""}</td>
+      <td class="num">${money2(r.market_price || r.price)}</td>
+      <td class="num net">${money(r.net_unit || 0)}</td>
+      <td class="num dim">${Math.round((r.net_pct || 0) * 100)}%</td>
+      <td><span class="route">${esc((r.channel || "").replace(" (", " ").replace(")", ""))}</span></td>
+      <td class="num">${r.psa10 ? (r.psa10_real ? "" : "~") + money(r.psa10) : ""}</td>
+      <td class="num ${r.psa10_x >= 8 ? "x-hot" : "dim"}">${r.psa10_x ? r.psa10_x + "×" : ""}</td>
+      <td><div class="filecell">${DECISIONS.map((d) => `<button data-file="${d.key}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div></td>`;
+    tr.addEventListener("click", () => openCard(r));
+    wireFileButtons(tr, r);
+    tb.appendChild(tr);
+  });
+  t.querySelectorAll("th[data-sort]").forEach((th) =>
+    th.addEventListener("click", () => { sortKey = th.dataset.sort; renderDecide(); }));
+  w.appendChild(t);
+  w.dataset.pool = "table";
+  return w;
 }
-const csvq = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
 
-function lcsCsv() {
-  const picks = rows.filter((r) => hasTag(r, "shop") && !r.keep).sort((a, b) => b.price - a.price);
-  if (!picks.length) { alert("No cards in the 🏪 Shop pile yet."); return; }
-  let tv = 0, tt = 0, tc = 0;
-  const lines = ["Card,Set,Number,Condition,Your Value,Trade (store credit),Cash"];
-  for (const r of picks) {
-    const v = +r.price || 0, t = +r.shop_trade || 0, c = +r.shop_cash || 0;
-    tv += v; tt += t; tc += c;
-    lines.push([csvq(r.name), csvq(r.set_name), csvq(r.number), csvq(r.condition || "NM"),
-                v.toFixed(2), t.toFixed(2), c.toFixed(2)].join(","));
+// ── PREP ─────────────────────────────────────────────────────────────────────
+function lane(title, count, total, sub) {
+  const el = document.createElement("div");
+  el.className = "lane";
+  el.innerHTML = `<div class="lane-h"><h3>${title}</h3><span class="st-pill num">${count}</span>
+    ${total != null ? `<span class="total num">${total}</span>` : ""}</div>
+    <p class="lane-sub">${sub}</p><div class="lane-rows"></div><div class="lane-actions"></div>`;
+  return el;
+}
+function laneRow(r, rightHtml) {
+  const el = document.createElement("div");
+  el.className = "lrow";
+  el.innerHTML = `${imgTag(r)}<div class="lr-main"><div class="lr-name">${esc(r.name)}</div>
+    <div class="lr-sub">${esc(r.set_name)} · <span class="num">${money2(r.price)}</span></div></div>${rightHtml}`;
+  el.querySelector(".lr-main").addEventListener("click", () => openCard(r));
+  return el;
+}
+
+function renderPrep() {
+  const v = $("#view-prep");
+  const s = stats();
+  v.innerHTML = "";
+
+  // 1) Condition check
+  const l1 = lane("Condition check", s.checkRows.length, null, "Inspect each card and set its real condition — the price reprices instantly and the card goes back to Decide.");
+  const r1 = l1.querySelector(".lane-rows");
+  if (!s.checkRows.length) r1.innerHTML = `<div class="lane-empty">Nothing waiting on a condition check.</div>`;
+  s.checkRows.slice(0, 50).forEach((r) => {
+    const row = laneRow(r, `<div class="cond-seg">${CONDS.map((c) => `<button data-c="${c}" class="${(r.condition || "NM") === c ? "active" : ""}">${c}</button>`).join("")}</div>`);
+    row.querySelectorAll("[data-c]").forEach((b) => b.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const cond = b.dataset.c;
+      const price = Math.round((r.market_price || 0) * (COND_FACTORS[cond] || 1) * 100) / 100;
+      await save(r, { condition: cond, price, tags: (r.tags || []).filter((t) => t !== "not-nm") });
+      row.classList.add("flash");
+      toast(`${r.name}: ${cond} — price updated to ${money2(price)}`);
+      setTimeout(renderAll, 500);
+    }));
+    r1.appendChild(row);
+  });
+  v.appendChild(l1);
+
+  // 2) Grade pile
+  const rawSum = s.gradePile.reduce((a, r) => a + r.price * (r.qty || 1), 0);
+  const gapSum = s.gradePile.reduce((a, r) => a + (r.grade_gap || 0) * (r.qty || 1), 0);
+  const l2 = lane("Grade pile", s.gradePile.length, null,
+    s.gradePile.length ? `${s.gradePile.length} cards · ${money(rawSum)} raw · worth ~${money(gapSum)} more graded. Check centering before submitting.` : "Cards you file to Grade collect here.");
+  const r2 = l2.querySelector(".lane-rows");
+  if (!s.gradePile.length) r2.innerHTML = `<div class="lane-empty">Empty — the ${ico("i-grade", "s")} quick-action files cards here.</div>`;
+  s.gradePile.slice(0, 50).forEach((r) => r2.appendChild(laneRow(r,
+    `<div class="lr-val num" title="Extra net if graded">+${money(r.grade_gap || 0)}</div>`)));
+  v.appendChild(l2);
+
+  // 3) Photos needed
+  const l3 = lane("Photos needed", s.photosNeeded.length, null, "eBay buyers trust real photos. Snap the front and back in good light.");
+  const r3 = l3.querySelector(".lane-rows");
+  if (!s.photosNeeded.length) r3.innerHTML = `<div class="lane-empty">Every eBay-bound card has photos.</div>`;
+  s.photosNeeded.slice(0, 50).forEach((r) => {
+    const row = laneRow(r, `<button class="ghost" aria-label="Add photos">${ico("i-camera")}</button>`);
+    row.querySelector("button").addEventListener("click", (ev) => { ev.stopPropagation(); openCard(r); });
+    r3.appendChild(row);
+  });
+  v.appendChild(l3);
+
+  // 4) Ready summary
+  const groups = [["eBay", s.ebayReady], ["TCGplayer", s.tcgpReady], ["Shop", s.shopRows]];
+  const l4 = lane("Ready for Cash Out", groups.reduce((a, [, g]) => a + g.length, 0), null, "Filed and prepped — head to Cash Out to execute.");
+  const r4 = l4.querySelector(".lane-rows");
+  groups.forEach(([label, g]) => {
+    if (!g.length) return;
+    const net = g.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
+    const d = document.createElement("div");
+    d.className = "lrow";
+    d.innerHTML = `<div class="lr-main"><div class="lr-name">${label}</div></div>
+      <div class="lr-val num" style="color:var(--money)">${money(net)} net</div>${ico("i-chev")}`;
+    d.style.cursor = "pointer";
+    d.addEventListener("click", () => nav("cashout"));
+    r4.appendChild(d);
+  });
+  if (!r4.children.length) r4.innerHTML = `<div class="lane-empty">Nothing filed to Sell or Shop yet.</div>`;
+  v.appendChild(l4);
+}
+
+// ── CASH OUT ─────────────────────────────────────────────────────────────────
+async function renderCashout() {
+  const v = $("#view-cashout");
+  const s = stats();
+  v.innerHTML = "";
+
+  if (!s.sellRows.length && !s.shopRows.length) {
+    const el = document.createElement("div");
+    el.className = "empty";
+    el.innerHTML = `${ico("i-export", "l")}<h4>Nothing's ready to cash out yet.</h4>
+      <p>Decisions come first — ${s.undecided.length.toLocaleString()} are waiting.</p>
+      <button class="ghost" id="go-decide">Start deciding</button>`;
+    el.querySelector("#go-decide").addEventListener("click", () => nav("decide"));
+    v.appendChild(el);
+    v.appendChild(ledger(s));
+    return;
   }
-  lines.push(["TOTAL", "", "", "", tv.toFixed(2), tt.toFixed(2), tc.toFixed(2)].join(","));
-  downloadCsv(lines, "lcs_dropoff_" + new Date().toISOString().slice(0, 10) + ".csv");
+
+  // eBay lane
+  const eb = s.ebayReady;
+  const ebNet = eb.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
+  const l1 = lane("eBay", eb.length, money(ebNet) + " net", "Copy each listing and paste it into eBay's Sell form. Photos attach from your phone.");
+  const r1 = l1.querySelector(".lane-rows");
+  if (!eb.length) r1.innerHTML = `<div class="lane-empty">File cards to Sell (routed to eBay) and they land here.</div>`;
+  eb.slice(0, 30).forEach((r) => {
+    const row = laneRow(r, `<div class="lr-val num net" style="color:var(--money)">${money(r.net_unit || 0)}</div>
+      <button class="ghost" data-copy>${ico("i-copy", "s")} Copy listing</button>`);
+    row.querySelector("[data-copy]").addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      try { await navigator.clipboard.writeText(ebayListingText(r)); ev.currentTarget.textContent = "Copied ✓"; toast("Copied — paste into eBay's Sell form"); }
+      catch (e) { openCard(r); }
+    });
+    r1.appendChild(row);
+  });
+  if (eb.length) l1.querySelector(".lane-actions").innerHTML =
+    `<button class="ghost" onclick="window.open('https://www.ebay.com/sell/create','_blank')">Open eBay Sell form ${ico("i-chev", "s")}</button>`;
+  v.appendChild(l1);
+
+  // TCGplayer lane
+  const tp = s.tcgpReady;
+  const tpNet = tp.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
+  const l2 = lane("TCGplayer", tp.length, money(tpNet) + " net", "Exports the Seller Portal add-quantity sheet — only the rows you're adding.");
+  const la2 = l2.querySelector(".lane-actions");
+  const r2 = l2.querySelector(".lane-rows");
+  if (!tp.length) r2.innerHTML = `<div class="lane-empty">File cards to Sell (routed to TCGplayer) and they land here.</div>`;
+  let catCount = 0;
+  if (!DEMO) {
+    const { count } = await sb.from("tcgp_catalog").select("*", { count: "exact", head: true });
+    catCount = count || 0;
+  }
+  if (catCount || DEMO) {
+    la2.innerHTML = `<button class="ghost" id="tcgp-export" ${tp.length ? "" : "disabled"}>${ico("i-export", "s")} Export upload sheet</button>
+      <span class="dim" style="font-size:12px">Catalog: <span class="num">${catCount.toLocaleString()}</span> rows · <button class="ghost" id="cat-update" style="padding:2px 6px;font-size:12px">Update…</button></span>`;
+  } else {
+    la2.innerHTML = `<button class="ghost" id="cat-update">Set up catalog (one-time)</button>
+      <span class="dim" style="font-size:12px">In Seller Portal, export Pricing for each game you sell and upload the CSVs here — you won't need to do this again until new sets drop.</span>`;
+  }
+  la2.querySelector("#tcgp-export")?.addEventListener("click", tcgpExport);
+  la2.querySelector("#cat-update")?.addEventListener("click", () => $("#catalog-file").click());
+  v.appendChild(l2);
+
+  // Shop lane
+  const sh = s.shopRows;
+  const shTrade = sh.reduce((a, r) => a + (r.shop_trade || 0) * (r.qty || 1), 0);
+  const l3 = lane("Local card shop", sh.length, money(shTrade) + " trade", "Download the sheet, hand it to the shop, and you've got a starting number for the haggle.");
+  const r3 = l3.querySelector(".lane-rows");
+  if (!sh.length) r3.innerHTML = `<div class="lane-empty">The ${ico("i-shop", "s")} quick-action builds your drop-off pile.</div>`;
+  sh.slice(0, 30).forEach((r) => r3.appendChild(laneRow(r,
+    `<div class="lr-val num">${money(r.shop_trade || 0)} <span class="dim">/ ${money(r.shop_cash || 0)} cash</span></div>`)));
+  l3.querySelector(".lane-actions").innerHTML =
+    `<button class="ghost" id="lcs-export" ${sh.length ? "" : "disabled"}>${ico("i-export", "s")} Download drop-off sheet${sh.length ? ` (${sh.length} cards · ${money(shTrade)})` : ""}</button>`;
+  l3.querySelector("#lcs-export").addEventListener("click", lcsCsv);
+  v.appendChild(l3);
+
+  v.appendChild(ledger(s));
 }
 
-// ── TCGplayer catalog (shared, from Seller Portal pricing exports) ──────────
-async function catalogUpload(files) {
-  const status = (m) => { $("#sell-meta").textContent = m; };
-  let total = 0;
-  for (const file of files) {
-    status(`Parsing ${file.name}…`);
-    const recs = parseCSV(await file.text());
-    const rows = [];
-    for (const r of recs) {
-      const sku = parseInt(r["TCGplayer Id"]);
-      if (!sku) continue;
-      rows.push({
-        sku_id: sku,
-        product_line: r["Product Line"] || "",
-        set_norm: normSetTCGP(r["Set Name"]),
-        num_norm: normNumTCGP(r["Number"]),
-        condition: r["Condition"] || "",
-        raw: r,
-      });
-    }
-    for (let i = 0; i < rows.length; i += 500) {
-      status(`${file.name}: uploading ${Math.min(i + 500, rows.length).toLocaleString()}/${rows.length.toLocaleString()}…`);
-      const { error } = await sb.from("tcgp_catalog").upsert(rows.slice(i, i + 500), { onConflict: "sku_id" });
-      if (error) { status("Catalog upload failed: " + error.message); return; }
-    }
-    total += rows.length;
-  }
-  status(`TCGP catalog updated ✓ (${total.toLocaleString()} rows)`);
+function ledger(s) {
+  const el = document.createElement("div");
+  el.className = "ledger";
+  const cents = s.mkt ? Math.round((s.net / s.mkt) * 100) : 0;
+  el.innerHTML = `<h3>If everything sells</h3>
+    <div class="big num">${money(s.net)}</div>
+    <div class="lline num">from ${money(s.mkt)} market · ${cents}¢ on the dollar — projected, not sold.</div>
+    <div class="bar"><i style="width:${cents}%"></i></div>
+    <div class="lline num">${s.keepers.length} keepers held back (${money(s.keepersVal)}) · fees and shipping take the rest.</div>`;
+  return el;
 }
 
-// ── TCGplayer upload-sheet export (matched by set + number + condition) ─────
-const TCGP_HEADER = ["TCGplayer Id", "Product Line", "Set Name", "Product Name", "Title",
-  "Number", "Rarity", "Condition", "TCG Market Price", "TCG Direct Low",
-  "TCG Low Price With Shipping", "TCG Low Price", "Total Quantity", "Add to Quantity",
-  "TCG Marketplace Price", "Photo URL"];
-
-async function tcgpExport() {
-  const { count } = await sb.from("tcgp_catalog").select("*", { count: "exact", head: true });
-  if (!count) { alert("The TCGP catalog is empty — hit ⚙️ TCGP catalog and upload your Seller Portal pricing export CSV(s) first (one-time; refresh when new sets drop)."); return; }
-
-  const picks = rows.filter((r) => isRawBucket(r.bucket) && !decided(r)
-    && (r.channel === "TCGplayer" || hasTag(r, "tcgplayer")) && (r.qty || 1) > 0);
-  if (!picks.length) { alert("No cards routed to TCGplayer."); return; }
-
-  const status = (m) => { $("#sell-meta").textContent = m; };
-  const matched = [], unmatched = [];
-  let done = 0;
-  const queue = [...picks];
-  const worker = async () => {
-    while (queue.length) {
-      const r = queue.shift();
-      done++;
-      if (done % 20 === 0) status(`Matching ${done}/${picks.length}…`);
-      const cond = tcgpCondition(r.category || (r.bucket === "mtg" ? "Magic: The Gathering" : "Pokemon"), r.variance, r.condition);
-      const setName = TCGP_SET_ALIASES[(r.set_name || "").trim()] || r.set_name;
-      const numN = normNumTCGP(r.number);
-      if (!cond || !numN) { unmatched.push(r); continue; }
-      const { data } = await sb.from("tcgp_catalog").select("raw")
-        .eq("set_norm", normSetTCGP(setName)).eq("num_norm", numN).eq("condition", cond).limit(2);
-      if (data && data.length === 1) matched.push([r, data[0].raw]);
-      else unmatched.push(r);   // ambiguous (2+) or missing → manual
-    }
-  };
-  await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
-
-  if (!matched.length) { alert(`0 of ${picks.length} matched — is the catalog current (right game files uploaded)?`); return; }
-  const lines = [TCGP_HEADER.join(",")];
-  for (const [r, raw] of matched) {
-    const row = { ...raw };
-    row["Add to Quantity"] = String(r.qty || 1);
-    // TCGplayer rejects rows without a Marketplace Price — fall back through prices.
-    if (!(row["TCG Marketplace Price"] || "").trim()) {
-      row["TCG Marketplace Price"] = row["TCG Market Price"] || row["TCG Low Price With Shipping"]
-        || row["TCG Low Price"] || row["TCG Direct Low"] || (+r.price).toFixed(2);
-    }
-    lines.push(TCGP_HEADER.map((h) => csvq(row[h] ?? "")).join(","));
+// ── BROWSE ───────────────────────────────────────────────────────────────────
+const BUCKETS = [["pkmn", "Pokemon", "i-grid"], ["mtg", "MTG", "i-grid"], ["ygo", "Yu-Gi-Oh", "i-grid"],
+                 ["graded", "Graded", "i-award"], ["sealed", "Sealed", "i-box"]];
+function renderBrowse() {
+  const v = $("#view-browse");
+  v.innerHTML = "";
+  if (!browseBucket) {
+    const g = document.createElement("div");
+    g.className = "cat-grid";
+    BUCKETS.forEach(([key, label, icon]) => {
+      const rs = rows.filter((r) => r.bucket === key);
+      const val = rs.reduce((a, r) => a + r.price * (isRaw(key) ? (r.qty || 1) : 1), 0);
+      const c = document.createElement("button");
+      c.className = "cat-card";
+      c.innerHTML = `<span class="cn">${ico(icon)}${label}</span><span class="cv num">${money(val)}</span>
+        <span class="cc num">${rs.length.toLocaleString()} items</span>`;
+      c.addEventListener("click", () => nav("browse", key));
+      g.appendChild(c);
+    });
+    v.appendChild(g);
+    return;
   }
-  downloadCsv(lines, "TCGplayer_add_" + new Date().toISOString().slice(0, 10) + ".csv");
-  status(`TCGP sheet: ${matched.length} matched, ${unmatched.length} unmatched`);
-  if (unmatched.length) {
-    alert(`Exported ${matched.length} rows.\n\n${unmatched.length} didn't match the catalog (list these manually):\n` +
-      unmatched.slice(0, 15).map((r) => `· ${r.name} — ${r.set_name} #${r.number}`).join("\n") +
-      (unmatched.length > 15 ? `\n…and ${unmatched.length - 15} more` : ""));
-  }
+  const [, label] = BUCKETS.find(([k]) => k === browseBucket) || ["", browseBucket];
+  const rs = rows.filter((r) => r.bucket === browseBucket && passes(r)).sort(SORTS[sortKey] || SORTS.value);
+  v.innerHTML = `<div class="crumb"><button id="crumb-back">Browse</button>${ico("i-chev", "s")}<span>${label}</span>
+      <span class="hd-spacer"></span><input type="search" id="bq" placeholder="Search…" value="${esc(filters.search)}" style="max-width:220px"></div>
+    <div id="browse-body"></div>`;
+  $("#crumb-back").addEventListener("click", () => { filters.search = ""; nav("browse"); });
+  $("#bq").addEventListener("input", (e) => { filters.search = e.target.value.trim(); renderBrowse(); });
+  const body = $("#browse-body");
+  const g = document.createElement("div");
+  g.className = "grid";
+  rs.slice(0, CAP).forEach((r) => g.appendChild(tile(r, true)));
+  body.appendChild(g);
+  if (rs.length > CAP) body.insertAdjacentHTML("beforeend",
+    `<div class="trunc-note num">Showing ${CAP} of ${rs.length.toLocaleString()} — search to reach the rest.</div>`);
 }
 
-// ── Delete inventory ────────────────────────────────────────────────────────
-async function deleteInventory() {
+// ── Card modal ───────────────────────────────────────────────────────────────
+function closeCard() { $("#card-modal").classList.add("hidden"); }
+function openCard(r) {
+  const panel = $("#modal-panel");
+  const chReason = r.channel ? `Best route: ${r.channel.replace(" (", " ").replace(")", "")} — ${esc(r.channel_reason || "")}` : "";
+  const psaHot = (r.psa10_x || 0) >= 8;
+  const psa = r.bucket === "pkmn" && r.psa10
+    ? `<div class="m-line ${psaHot ? "hot" : ""} num">PSA 10 pays ${r.psa10_real ? "" : "~"}${money(r.psa10)} — ${r.psa10_x}× raw.${psaHot ? " Don't sell this one raw." : ""}</div>` : "";
+  const cur = decisionOf(r);
+  panel.innerHTML = `
+    <button class="modal-close" aria-label="Close">${ico("i-x", "m")}</button>
+    <div class="m-grid">
+      <div class="m-art">${imgTag(r)}</div>
+      <div>
+        <h3 class="m-title">${esc(r.name)}</h3>
+        <div class="m-sub">${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}${r.variance ? " · " + esc(r.variance) : ""}${r.grade && r.grade !== "Ungraded" ? " · " + esc(r.grade) : ""}</div>
+        <div class="m-price"><span class="p num">${money2(r.price)}</span>${(r.qty || 1) > 1 ? `<span class="q num" style="border:1px solid var(--border-strong);border-radius:6px;padding:0 8px;font-size:12px;color:var(--text-2)">×${r.qty}</span>` : ""}</div>
+        ${isRaw(r.bucket) ? `<div class="m-line num dim">${esc(chReason)} · nets <span class="net">${money(r.net_unit || 0)}</span> (${Math.round((r.net_pct || 0) * 100)}%)</div>` : ""}
+        ${psa}
+        ${isRaw(r.bucket) ? `<div class="m-line num">Shop offer: <span class="net">${money(r.shop_trade || 0)}</span> trade / ${money(r.shop_cash || 0)} cash</div>` : ""}
+        <div id="m-trend"></div>
+
+        ${isRaw(r.bucket) ? `
+        <div class="m-seclbl">Condition</div>
+        <div class="cond-seg" id="m-cond">${CONDS.map((c) => `<button data-c="${c}" class="${(r.condition || "NM") === c ? "active" : ""}">${c}</button>`).join("")}</div>
+
+        <div class="m-seclbl">File this card</div>
+        <div class="m-decide">${DECISIONS.map((d) =>
+          `<button data-file="${d.key}" class="${cur === d.key ? "on" : ""}" aria-label="${d.aria}">${ico(d.icon)}<span>${d.label}</span></button>`).join("")}</div>
+        <div class="m-tools">
+          <button class="ghost ${offC(r) ? "active tog-chip" : ""}" id="m-oc">${ico("i-offcenter", "s")} Off-center${offC(r) ? " ✓" : ""}</button>
+          <button class="ghost" id="m-ebay">${ico("i-copy", "s")} Copy eBay listing</button>
+          <button class="ghost" id="m-ebay-open">Open eBay ${ico("i-chev", "s")}</button>
+        </div>
+
+        <div class="m-seclbl">Photos for eBay</div>
+        <div class="m-line dim" style="margin-top:-2px">eBay buyers trust real photos. Snap the front and back in good light.</div>
+        <div class="ps-wrap">${photoSlot(r, "front")}${photoSlot(r, "back")}</div>` : ""}
+      </div>
+    </div>`;
+  panel.querySelector(".modal-close").addEventListener("click", closeCard);
+  if (isRaw(r.bucket)) {
+    panel.querySelectorAll("#m-cond [data-c]").forEach((b) => b.addEventListener("click", async () => {
+      const cond = b.dataset.c;
+      const price = Math.round((r.market_price || 0) * (COND_FACTORS[cond] || 1) * 100) / 100;
+      await save(r, { condition: cond, price, tags: (r.tags || []).filter((t) => t !== "not-nm") });
+      renderAll(); openCard(r);
+      toast(`Condition ${cond} — price updated to ${money2(price)}`);
+    }));
+    panel.querySelectorAll(".m-decide [data-file]").forEach((b) => b.addEventListener("click", async () => {
+      await fileCard(r, b.dataset.file); openCard(r);
+    }));
+    $("#m-oc").addEventListener("click", async () => {
+      const t = offC(r) ? (r.tags || []).filter((x) => x !== "off-center") : [...(r.tags || []), "off-center"];
+      await save(r, { tags: t }); renderAll(); openCard(r);
+    });
+    $("#m-ebay").addEventListener("click", async (ev) => {
+      try { await navigator.clipboard.writeText(ebayListingText(r)); ev.currentTarget.innerHTML = `${ico("i-done", "s")} Copied`; toast("Copied — paste into eBay's Sell form"); }
+      catch (e) { alert(ebayListingText(r)); }
+    });
+    $("#m-ebay-open").addEventListener("click", () => window.open("https://www.ebay.com/sell/create", "_blank"));
+    panel.querySelectorAll("input[type=file]").forEach((inp) =>
+      inp.addEventListener("change", () => { if (inp.files[0]) uploadPhoto(r, inp.dataset.side, inp.files[0]); }));
+    panel.querySelectorAll("[data-delphoto]").forEach((b) =>
+      b.addEventListener("click", () => deletePhoto(r, b.dataset.delphoto)));
+  }
+  $("#card-modal").classList.remove("hidden");
+
+  (async () => {
+    if (!DEMO) {
+      const { data: { user } } = await sb.auth.getUser();
+      if (user) for (const side of r.photos || []) {
+        const { data } = await sb.storage.from("card-photos").createSignedUrl(`${user.id}/${r.natural_key}/${side}.jpg`, 3600);
+        const img = panel.querySelector(`img[data-photo="${side}"]`);
+        if (data?.signedUrl && img) img.src = data.signedUrl;
+      }
+      const t = await trendHtml(r);
+      const td = panel.querySelector("#m-trend");
+      if (td && t) td.outerHTML = t;
+    }
+  })();
+}
+
+function photoSlot(r, side) {
+  const has = (r.photos || []).includes(side);
+  return `<div class="photo-slot">
+    <label class="ps-drop">${has ? `<img data-photo="${side}" alt="${side}">` : `${ico("i-camera", "m")}<span>Add ${side}</span>`}
+      <input type="file" accept="image/*" capture="environment" data-side="${side}" hidden></label>
+    <div class="ps-row"><span>${side}</span>${has ? `<button data-delphoto="${side}">remove</button>` : ""}</div></div>`;
+}
+
+async function uploadPhoto(r, side, file) {
+  if (DEMO) { toast("Demo mode — sign in to save photos"); return; }
   const { data: { user } } = await sb.auth.getUser();
   if (!user) return;
-  if (!confirm(`Delete ALL ${rows.length} cards from your cloud inventory? (Photos and price history are kept; re-import restores tags by card.)`)) return;
-  if (!confirm("Are you sure? This clears the card list.")) return;
-  const { error } = await sb.from("cards").delete().eq("user_id", user.id);
-  if (error) { alert("Delete failed: " + error.message); return; }
-  load();
+  const { error } = await sb.storage.from("card-photos").upload(`${user.id}/${r.natural_key}/${side}.jpg`, file, { upsert: true, contentType: file.type || "image/jpeg" });
+  if (error) { toast("Photo upload failed: " + error.message); return; }
+  await save(r, { photos: Array.from(new Set([...(r.photos || []), side])) });
+  openCard(r); renderAll();
+}
+async function deletePhoto(r, side) {
+  if (DEMO) return;
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  await sb.storage.from("card-photos").remove([`${user.id}/${r.natural_key}/${side}.jpg`]);
+  await save(r, { photos: (r.photos || []).filter((s) => s !== side) });
+  openCard(r); renderAll();
 }
 
-// ── Update prices (real market + PSA-10 via edge function) ──────────────────
-async function updatePrices() {
-  const btn = $("#prices-btn");
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session) return;
-  const targets = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10)
-    .sort((a, b) => b.price - a.price);
-  if (!targets.length) { alert("No Pokémon cards ≥ $10 to update."); return; }
-  if (!confirm(`Fetch real market + PSA-10 prices for ${targets.length} Pokémon cards ($10+)?`)) return;
-  btn.disabled = true;
-  let done = 0, hit = 0, failed = 0, notConfigured = false;
-  const hist = [];
-  const queue = [...targets];
-  const worker = async () => {
-    while (queue.length && !notConfigured) {
-      const r = queue.shift();
-      try {
-        const bare = r.name.replace(/\s*\([^)]*\)/g, "").split(" - ")[0].trim();
-        const num = (r.number || "").split("/")[0];
-        const resp = await fetch(FN_PRICES, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON,
-                     "Authorization": "Bearer " + session.access_token },
-          body: JSON.stringify({ q: `pokemon ${bare} ${num}`.trim() }),
-        });
-        if (resp.status === 503) { notConfigured = true; break; }
-        if (resp.ok) {
-          const d = await resp.json();
-          const patch = {};
-          if (d.loose) {
-            patch.market_price = d.loose;
-            patch.price = Math.round(d.loose * (COND_FACTORS[r.condition || "NM"] || 1) * 100) / 100;
-          }
-          if (d.psa10) { patch.psa10 = d.psa10; patch.psa10_real = true; }
-          const base = patch.price || r.price;
-          if (patch.psa10 && base) patch.psa10_x = Math.round((patch.psa10 / base) * 10) / 10;
-          if (Object.keys(patch).length) {
-            await save(r, patch);
-            hist.push({ natural_key: r.natural_key, price: r.price, psa10: r.psa10 || 0 });
-            hit++;
-          } else failed++;
-        } else failed++;
-      } catch (e) { failed++; }
-      done++;
-      if (done % 5 === 0) btn.textContent = `💲 ${done}/${targets.length}…`;
-    }
-  };
-  await Promise.all([worker(), worker(), worker(), worker()]);
-  for (let i = 0; i < hist.length; i += 500) {
-    await sb.from("price_history").insert(hist.slice(i, i + 500));
-  }
-  btn.disabled = false;
-  btn.textContent = "💲 Update prices";
-  if (notConfigured) alert("Real prices aren't enabled yet — the PriceCharting key isn't configured server-side.");
-  else alert(`Updated ${hit} cards with real market + PSA-10 prices${failed ? ` · ${failed} had no clean match` : ""}.`);
-  renderSummary(); renderTabs(); render();
+async function trendHtml(r) {
+  const { data } = await sb.from("price_history").select("price,ts")
+    .eq("natural_key", r.natural_key).order("ts", { ascending: true }).limit(100);
+  if (!data || data.length < 2) return "";
+  const first = data[0], last = data[data.length - 1];
+  const days = (new Date(last.ts) - new Date(first.ts)) / 864e5;
+  if (days < 1 || !+first.price) return "";
+  const chg = (last.price - first.price) / first.price;
+  const icon = chg > 0.03 ? "i-trend-up" : chg < -0.03 ? "i-trend-down" : "i-list";
+  const word = chg > 0.03 ? "Rising" : chg < -0.03 ? "Falling" : "Flat";
+  return `<div class="m-line num" style="display:flex;align-items:center;gap:6px">${ico(icon, "s")} ${word} ${(chg * 100).toFixed(0)}% over ${Math.round(days)}d <span class="dim">(${data.length} snapshots)</span></div>`;
 }
 
-// ── eBay listing generator ──────────────────────────────────────────────────
+// ── eBay listing text ────────────────────────────────────────────────────────
 function ebayListingText(r) {
   const game = r.bucket === "pkmn" ? "Pokemon TCG" : r.bucket === "mtg" ? "MTG Magic" : "Yu-Gi-Oh";
   let title = `${game} ${r.name} ${r.set_name} ${r.number || ""} ${r.condition || "NM"}`.replace(/\s+/g, " ").trim();
@@ -462,257 +828,269 @@ function ebayListingText(r) {
     `BEST OFFER: auto-accept ≥ $${(list * 0.88).toFixed(2)} · auto-decline < $${(list * 0.65).toFixed(2)}`,
     `SHIPPING: ${r.price < 20 ? "eBay Standard Envelope (raw single < $20)" : r.price >= 250 ? "tracked mailer — routes through eBay Authenticity Guarantee ($250+)" : "USPS Ground Advantage, rigid tracked mailer"}`,
     "", "ITEM SPECIFICS:",
-    `  Game: ${game}`,
-    `  Card Name: ${r.name}`,
-    `  Set: ${r.set_name}`,
-    `  Card Number: ${r.number || "-"}`,
-    `  Rarity/Finish: ${r.variance || "-"}`,
+    `  Game: ${game}`, `  Card Name: ${r.name}`, `  Set: ${r.set_name}`,
+    `  Card Number: ${r.number || "-"}`, `  Rarity/Finish: ${r.variance || "-"}`,
     `  Condition: ${r.condition === "NM" || !r.condition ? "Near Mint or Better" : r.condition}`,
-    `  Language: ${(r.flags || []).includes("japanese") ? "Japanese" : "English"}`,
-    `  Graded: No`,
+    `  Language: ${(r.flags || []).includes("japanese") ? "Japanese" : "English"}`, `  Graded: No`,
   ].join("\n");
 }
 
-// ── Photos (Supabase Storage, private per-user) ─────────────────────────────
-async function signedPhoto(uid, nkey, side) {
-  const { data } = await sb.storage.from("card-photos").createSignedUrl(`${uid}/${nkey}/${side}.jpg`, 3600);
-  return data?.signedUrl || null;
+// ── CSV exports ──────────────────────────────────────────────────────────────
+function downloadCsv(lines, filename) {
+  const blob = new Blob([lines.join("\r\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+  URL.revokeObjectURL(a.href);
 }
-async function uploadPhoto(r, side, file) {
-  const { data: { user } } = await sb.auth.getUser();
-  if (!user) return;
-  const path = `${user.id}/${r.natural_key}/${side}.jpg`;
-  const { error } = await sb.storage.from("card-photos").upload(path, file, { upsert: true, contentType: file.type || "image/jpeg" });
-  if (error) { alert("Photo upload failed: " + error.message); return; }
-  const photos = Array.from(new Set([...(r.photos || []), side]));
-  await save(r, { photos });
-  openCard(r); render();
-}
-async function deletePhoto(r, side) {
-  const { data: { user } } = await sb.auth.getUser();
-  if (!user) return;
-  await sb.storage.from("card-photos").remove([`${user.id}/${r.natural_key}/${side}.jpg`]);
-  await save(r, { photos: (r.photos || []).filter((s) => s !== side) });
-  openCard(r); render();
-}
-function photoSlot(r, side) {
-  const has = (r.photos || []).includes(side);
-  return `<div class="photo-slot">
-      <label class="ps-drop" data-slot="${side}">
-        ${has ? `<img data-photo="${side}" alt="${side}">` : `<span class="ps-hint">＋ ${side}</span>`}
-        <input type="file" accept="image/*" capture="environment" data-side="${side}" hidden>
-      </label>
-      <div class="ps-row"><span>${side}</span>${has ? `<button class="linkbtn" data-mact="delphoto" data-side="${side}">remove</button>` : ""}</div>
-    </div>`;
+const csvq = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
+
+function lcsCsv() {
+  const picks = rows.filter((r) => hasTag(r, "shop") && !r.keep).sort((a, b) => b.price - a.price);
+  if (!picks.length) { toast("Shop pile is empty."); return; }
+  let tv = 0, tt = 0, tc = 0;
+  const lines = ["Card,Set,Number,Condition,Your Value,Trade (store credit),Cash"];
+  for (const r of picks) {
+    const v = +r.price || 0, t = +r.shop_trade || 0, c = +r.shop_cash || 0;
+    tv += v; tt += t; tc += c;
+    lines.push([csvq(r.name), csvq(r.set_name), csvq(r.number), csvq(r.condition || "NM"), v.toFixed(2), t.toFixed(2), c.toFixed(2)].join(","));
+  }
+  lines.push(["TOTAL", "", "", "", tv.toFixed(2), tt.toFixed(2), tc.toFixed(2)].join(","));
+  downloadCsv(lines, "lcs_dropoff_" + new Date().toISOString().slice(0, 10) + ".csv");
+  toast(`Drop-off sheet downloaded — ${picks.length} cards, ${money(tt)} trade`);
 }
 
-// ── Trend (price_history) ───────────────────────────────────────────────────
-async function trendHtml(r) {
-  const { data } = await sb.from("price_history").select("price,ts")
-    .eq("natural_key", r.natural_key).order("ts", { ascending: true }).limit(100);
-  if (!data || data.length < 2) return "";
-  const first = data[0], last = data[data.length - 1];
-  const days = (new Date(last.ts) - new Date(first.ts)) / 864e5;
-  if (days < 1 || !+first.price) return "";
-  const chg = (last.price - first.price) / first.price;
-  const dir = chg > 0.03 ? "▲ rising" : chg < -0.03 ? "▼ falling" : "→ flat";
-  return `<div class="m-line">${dir} ${(chg * 100).toFixed(0)}% over ${Math.round(days)}d <span class="dim">(${data.length} snapshots)</span></div>`;
-}
+const TCGP_HEADER = ["TCGplayer Id", "Product Line", "Set Name", "Product Name", "Title", "Number", "Rarity", "Condition",
+  "TCG Market Price", "TCG Direct Low", "TCG Low Price With Shipping", "TCG Low Price", "Total Quantity", "Add to Quantity",
+  "TCG Marketplace Price", "Photo URL"];
 
-// ── Modal (details left · actions right) ────────────────────────────────────
-function closeCard() { $("#card-modal").classList.add("hidden"); }
-function openCard(r) {
-  const img = r.image_url ? `<img src="${r.image_url}">` : `<div class="noimg">no image</div>`;
-  const psa = r.bucket === "pkmn" && r.psa10
-    ? `<div class="m-line ${(r.psa10_x || 0) >= 8 ? "hot" : ""}">◆ PSA 10${r.psa10_real ? "" : " (est)"}: <b>${money(r.psa10)}</b> · ${r.psa10_x}× raw${(r.psa10_x || 0) >= 8 ? " 🔥 don't undersell" : ""}</div>` : "";
-  $("#modal-panel").innerHTML = `
-    <button class="modal-close" data-mact="close">×</button>
-    <div class="modal-grid">
-      <div class="modal-art">${img}</div>
-      <div class="modal-info">
-        <h3>${esc(r.name)}</h3>
-        <p class="dim">${esc(r.set_name)} · #${esc(r.number) || "—"}${r.variance ? " · " + esc(r.variance) : ""}</p>
-        <div class="m-cols">
-          <div class="m-left">
-            <div class="price-row">
-              <span class="price-big">$${(+r.price).toFixed(2)}</span>
-              ${(r.qty || 1) > 1 ? `<span class="qty-chip">×${r.qty}</span>` : ""}
-              <span class="badge ${CHANNEL_CLASS[r.channel] || ""}">${esc(r.channel)}</span>
-            </div>
-            <div class="m-line dim">net $${Math.round(r.net_unit || 0)} · ${Math.round((r.net_pct || 0) * 100)}% back</div>
-            <div class="m-row m-extra">
-              <label class="filter-label">Condition
-                <select id="m-cond">${Object.keys(COND_FACTORS).map((c) => `<option value="${c}" ${(r.condition || "NM") === c ? "selected" : ""}>${c}</option>`).join("")}</select>
-              </label>
-            </div>
-            ${psa}
-            <div class="m-line">🏪 Shop: trade <b>$${Math.round(r.shop_trade || 0)}</b> / cash $${Math.round(r.shop_cash || 0)}</div>
-            <div id="m-trend"></div>
-          </div>
-          <div class="m-right">
-            <button class="m-btn ${r.keep ? "on" : ""}" data-mact="keep">${r.keep ? "★ Keeper" : "☆ Keep"}</button>
-            <button class="m-btn ${hasTag(r, "to-grade") ? "on" : ""}" data-mact="gradepile">◆ To grade</button>
-            <button class="m-btn ${hasTag(r, "shop") ? "on" : ""}" data-mact="shop">🏪 Drop-off</button>
-            <button class="m-btn ${notNM(r) ? "on" : ""}" data-mact="notnm">🔍 Not NM</button>
-            <button class="m-btn ${offC(r) ? "on" : ""}" data-mact="oc">◎ Off-center</button>
-            <button class="m-btn" data-mact="ebaycopy">📋 eBay listing</button>
-            <button class="m-btn" data-mact="ebayopen">↗ eBay sell page</button>
-          </div>
-        </div>
-        <div class="m-photos">
-          <div class="filter-label">Photos for eBay</div>
-          <div class="ps-wrap">${photoSlot(r, "front")}${photoSlot(r, "back")}</div>
-        </div>
-      </div>
-    </div>`;
-  const panel = $("#modal-panel");
-  panel.onclick = async (ev) => {
-    const act = ev.target.dataset && ev.target.dataset.mact;
-    if (!act) return;
-    ev.stopPropagation();
-    if (act === "close") { closeCard(); return; }
-    if (act === "keep") await save(r, { keep: !r.keep });
-    else if (act === "oc") await toggleTag(r, "off-center");
-    else if (act === "notnm") await toggleTag(r, "not-nm");
-    else if (act === "gradepile") await toggleTag(r, "to-grade");
-    else if (act === "shop") await toggleTag(r, "shop");
-    else if (act === "ebaycopy") {
-      try { await navigator.clipboard.writeText(ebayListingText(r)); ev.target.textContent = "📋 Copied ✓"; } catch (e) { alert(ebayListingText(r)); }
-      return;
-    } else if (act === "ebayopen") { window.open("https://www.ebay.com/sell/create", "_blank"); return; }
-    else if (act === "delphoto") { await deletePhoto(r, ev.target.dataset.side); return; }
-    renderSummary(); renderTabs(); render(); openCard(r);
-  };
-  panel.querySelectorAll("input[type=file]").forEach((inp) =>
-    inp.addEventListener("change", () => { if (inp.files[0]) uploadPhoto(r, inp.dataset.side, inp.files[0]); }));
-  const cs = $("#m-cond");
-  cs.addEventListener("change", async () => {
-    const cond = cs.value;
-    const price = Math.round((r.market_price || 0) * (COND_FACTORS[cond] || 1) * 100) / 100;
-    const tags = (r.tags || []).filter((x) => x !== "not-nm");
-    await save(r, { condition: cond, price, tags });
-    renderSummary(); renderTabs(); render(); openCard(r);
-  });
-  $("#card-modal").classList.remove("hidden");
-
-  (async () => {
-    const { data: { user } } = await sb.auth.getUser();
-    if (user) {
-      for (const side of r.photos || []) {
-        const url = await signedPhoto(user.id, r.natural_key, side);
-        const el = panel.querySelector(`img[data-photo="${side}"]`);
-        if (url && el) el.src = url;
-      }
+async function tcgpExport() {
+  if (DEMO) { toast("Demo mode — sign in to export"); return; }
+  const s = stats();
+  const picks = s.tcgpReady;
+  if (!picks.length) { toast("No sell-filed cards routed to TCGplayer."); return; }
+  setStatus(`Matching ${picks.length} cards against the catalog…`);
+  const matched = [], unmatched = [];
+  const queue = [...picks];
+  const worker = async () => {
+    while (queue.length) {
+      const r = queue.shift();
+      const cond = tcgpCondition(r.category || (r.bucket === "mtg" ? "Magic: The Gathering" : "Pokemon"), r.variance, r.condition);
+      const setName = TCGP_SET_ALIASES[(r.set_name || "").trim()] || r.set_name;
+      const numN = normNumTCGP(r.number);
+      if (!cond || !numN) { unmatched.push(r); continue; }
+      const { data } = await sb.from("tcgp_catalog").select("raw")
+        .eq("set_norm", normSetTCGP(setName)).eq("num_norm", numN).eq("condition", cond).limit(2);
+      if (data && data.length === 1) matched.push([r, data[0].raw]);
+      else unmatched.push(r);
     }
-    const t = await trendHtml(r);
-    const td = panel.querySelector("#m-trend");
-    if (td && t) td.outerHTML = t;
-  })();
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  if (!matched.length) { toast(`0 of ${picks.length} matched — is the catalog loaded for these games?`); renderAll(); return; }
+  const lines = [TCGP_HEADER.join(",")];
+  for (const [r, raw] of matched) {
+    const row = { ...raw };
+    row["Add to Quantity"] = String(r.qty || 1);
+    if (!(row["TCG Marketplace Price"] || "").trim()) {
+      row["TCG Marketplace Price"] = row["TCG Market Price"] || row["TCG Low Price With Shipping"] || row["TCG Low Price"] || row["TCG Direct Low"] || (+r.price).toFixed(2);
+    }
+    lines.push(TCGP_HEADER.map((h) => csvq(row[h] ?? "")).join(","));
+  }
+  downloadCsv(lines, "TCGplayer_add_" + new Date().toISOString().slice(0, 10) + ".csv");
+  toast(`TCGplayer sheet: ${matched.length} rows${unmatched.length ? ` · ${unmatched.length} unmatched (list manually)` : ""}`, null, 5000);
+  renderAll();
 }
 
-// ── Import CSV ──────────────────────────────────────────────────────────────
+// ── Import / catalog / prices / delete ───────────────────────────────────────
 async function importCsv(file) {
-  const status = (m) => { $("#sell-meta").textContent = m; };
+  if (DEMO) { toast("Demo mode — sign in to import your own collection"); return; }
   try {
-    status("Reading file…");
+    setStatus("Reading file…");
     const text = await file.text();
     const { data: { user } } = await sb.auth.getUser();
-    if (!user) { status("Sign in first."); return; }
-
-    status("Loading existing tags…");
+    if (!user) return;
+    setStatus("Loading existing tags…");
     const existing = {};
     for (let from = 0; from < 20000; from += 1000) {
-      const { data, error } = await sb.from("cards")
-        .select("natural_key,tags,condition,keep,photos")
+      const { data, error } = await sb.from("cards").select("natural_key,tags,condition,keep,photos")
         .order("id", { ascending: true }).range(from, from + 999);
       if (error) break;
       (data || []).forEach((r) => { existing[r.natural_key] = r; });
       if (!data || data.length < 1000) break;
     }
-
-    const cards = await buildRows(text, existing, status);
-    if (!cards.length) { status("No cards found — is this a Collectr export.csv?"); return; }
+    const cards = await buildRows(text, existing, setStatus);
+    if (!cards.length) { setStatus("No cards found — is this a Collectr export.csv?"); return; }
     cards.forEach((c) => {
       c.user_id = user.id;
       const prev = existing[c.natural_key];
-      if (prev && prev.photos && prev.photos.length) c.photos = prev.photos;
+      if (prev?.photos?.length) c.photos = prev.photos;
     });
-
-    // YGO card art via YGOPRODeck (53-card scale — quick).
     const ygo = cards.filter((c) => c.bucket === "ygo" && !c.image_url);
     if (ygo.length) {
-      status(`Fetching ${ygo.length} Yu-Gi-Oh images…`);
+      setStatus(`Fetching ${ygo.length} Yu-Gi-Oh images…`);
       const q = [...ygo];
       const w = async () => {
         while (q.length) {
           const c = q.shift();
           try {
             const resp = await fetch("https://db.ygoprodeck.com/api/v7/cardinfo.php?name=" + encodeURIComponent(c.name));
-            if (resp.ok) {
-              const d = await resp.json();
-              c.image_url = d?.data?.[0]?.card_images?.[0]?.image_url_small || null;
-            }
-          } catch (e) { /* leave null */ }
+            if (resp.ok) c.image_url = (await resp.json())?.data?.[0]?.card_images?.[0]?.image_url_small || null;
+          } catch (e) { /* keep null */ }
         }
       };
       await Promise.all([w(), w(), w()]);
     }
-
-    status("Replacing your inventory…");
+    setStatus("Replacing your inventory…");
     const del = await sb.from("cards").delete().eq("user_id", user.id);
-    if (del.error) { status("Import failed: " + del.error.message); return; }
+    if (del.error) { setStatus("Import failed: " + del.error.message); return; }
     for (let i = 0; i < cards.length; i += 500) {
-      status(`Uploading ${Math.min(i + 500, cards.length)}/${cards.length}…`);
+      setStatus(`Uploading ${Math.min(i + 500, cards.length)}/${cards.length}…`);
       const ins = await sb.from("cards").insert(cards.slice(i, i + 500));
-      if (ins.error) { status("Import failed at " + i + ": " + ins.error.message); return; }
+      if (ins.error) { setStatus("Import failed: " + ins.error.message); return; }
     }
-    status("Imported " + cards.length + " cards ✓");
+    toast(`Imported ${cards.length} cards`);
     load();
-  } catch (e) {
-    status("Import failed: " + (e.message || e));
-  }
+  } catch (e) { setStatus("Import failed: " + (e.message || e)); }
 }
 
-// ── Wiring ──────────────────────────────────────────────────────────────────
+async function catalogUpload(files) {
+  if (DEMO) { toast("Demo mode"); return; }
+  let total = 0;
+  for (const file of files) {
+    setStatus(`Parsing ${file.name}…`);
+    const recs = parseCSV(await file.text());
+    const out = [];
+    for (const r of recs) {
+      const sku = parseInt(r["TCGplayer Id"]);
+      if (!sku) continue;
+      out.push({ sku_id: sku, product_line: r["Product Line"] || "", set_norm: normSetTCGP(r["Set Name"]),
+                 num_norm: normNumTCGP(r["Number"]), condition: r["Condition"] || "", raw: r });
+    }
+    for (let i = 0; i < out.length; i += 500) {
+      setStatus(`${file.name}: ${Math.min(i + 500, out.length).toLocaleString()}/${out.length.toLocaleString()}…`);
+      const { error } = await sb.from("tcgp_catalog").upsert(out.slice(i, i + 500), { onConflict: "sku_id" });
+      if (error) { setStatus("Catalog upload failed: " + error.message); return; }
+    }
+    total += out.length;
+  }
+  toast(`Catalog updated — ${total.toLocaleString()} rows`);
+  renderAll();
+}
+
+async function updatePrices() {
+  if (DEMO) { toast("Demo mode — sign in to refresh prices"); return; }
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return;
+  const targets = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10).sort((a, b) => b.price - a.price);
+  if (!targets.length) { toast("No Pokemon cards ≥ $10 to update."); return; }
+  if (!confirm(`Fetch real market + PSA-10 prices for ${targets.length} Pokemon cards ($10+)?`)) return;
+  let done = 0, hit = 0, failed = 0, notConfigured = false;
+  const hist = [];
+  const queue = [...targets];
+  const worker = async () => {
+    while (queue.length && !notConfigured) {
+      const r = queue.shift();
+      try {
+        const bare = r.name.replace(/\s*\([^)]*\)/g, "").split(" - ")[0].trim();
+        const resp = await fetch(FN_PRICES, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": "Bearer " + session.access_token },
+          body: JSON.stringify({ q: `pokemon ${bare} ${(r.number || "").split("/")[0]}`.trim() }),
+        });
+        if (resp.status === 503) { notConfigured = true; break; }
+        if (resp.ok) {
+          const d = await resp.json();
+          const patch = {};
+          if (d.loose) { patch.market_price = d.loose; patch.price = Math.round(d.loose * (COND_FACTORS[r.condition || "NM"] || 1) * 100) / 100; }
+          if (d.psa10) { patch.psa10 = d.psa10; patch.psa10_real = true; }
+          const base = patch.price || r.price;
+          if (patch.psa10 && base) patch.psa10_x = Math.round((patch.psa10 / base) * 10) / 10;
+          if (Object.keys(patch).length) { await save(r, patch); hist.push({ natural_key: r.natural_key, price: r.price, psa10: r.psa10 || 0 }); hit++; }
+          else failed++;
+        } else failed++;
+      } catch (e) { failed++; }
+      done++;
+      if (done % 5 === 0) setStatus(`Pricing ${done} of ${targets.length}…`);
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  for (let i = 0; i < hist.length; i += 500) await sb.from("price_history").insert(hist.slice(i, i + 500));
+  if (notConfigured) toast("Real prices need the PriceCharting key configured server-side.");
+  else toast(`Updated ${hit} cards with real prices${failed ? ` · ${failed} no clean match` : ""}`);
+  renderAll();
+}
+
+async function deleteInventory() {
+  if (DEMO) { toast("Demo mode"); return; }
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  if (!confirm(`Delete all ${rows.length} cards? Photos and price history stay, and re-importing restores your piles.`)) return;
+  if (!confirm("Last check — delete everything?")) return;
+  const { error } = await sb.from("cards").delete().eq("user_id", user.id);
+  if (error) { toast("Delete failed: " + error.message); return; }
+  toast("Inventory cleared");
+  load();
+}
+
+// ── Keyboard layer (desktop, Decide table): j/k move · 1–5 file · Enter open ─
+const FILE_KEYS = { "1": "sell", "2": "keep", "3": "grade", "4": "shop", "5": "check" };
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeCard(); return; }
+  if (e.key === "u" && $("#toast-undo")) { $("#toast-undo").click(); return; }
+  if (window.innerWidth < 960 || station !== "decide") return;
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+  const trows = document.querySelectorAll("table.positions tbody tr");
+  if (!trows.length) return;
+  if (e.key === "j" || e.key === "k") {
+    kfocus = e.key === "j" ? Math.min(kfocus + 1, trows.length - 1) : Math.max(kfocus - 1, 0);
+    trows.forEach((tr, i) => tr.classList.toggle("kfocus", i === kfocus));
+    trows[kfocus]?.scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter" && kfocus >= 0) {
+    trows[kfocus].click();
+  } else if (FILE_KEYS[e.key] && kfocus >= 0) {
+    trows[kfocus].querySelector(`[data-file="${FILE_KEYS[e.key]}"]`)?.click();
+  }
+});
+
+// ── Auth + boot ──────────────────────────────────────────────────────────────
+function showAuth() { $("#auth-section").classList.remove("hidden"); $("#app-main").classList.add("hidden"); }
+function showApp() {
+  $("#auth-section").classList.add("hidden"); $("#app-main").classList.remove("hidden");
+  if (DEMO) $("#demo-note").classList.remove("hidden");
+  load();
+}
+async function signIn() {
+  const { error } = await sb.auth.signInWithPassword({ email: $("#auth-email").value.trim(), password: $("#auth-pass").value });
+  $("#auth-status").textContent = error ? error.message : "";
+}
+async function signUp() {
+  const { error } = await sb.auth.signUp({ email: $("#auth-email").value.trim(), password: $("#auth-pass").value });
+  $("#auth-status").textContent = error ? error.message : "Account created — check your email to confirm, then sign in.";
+}
+
+// Header / menu wiring
+$("#data-btn").addEventListener("click", (e) => { e.stopPropagation(); $("#data-menu").classList.toggle("hidden"); });
+document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap")) $("#data-menu").classList.add("hidden"); });
 $("#import-btn").addEventListener("click", () => $("#import-file").click());
-$("#import-file").addEventListener("change", () => {
-  const f = $("#import-file").files[0];
-  if (f) importCsv(f);
-  $("#import-file").value = "";
-});
-$("#lcs-btn").addEventListener("click", lcsCsv);
-$("#prices-btn").addEventListener("click", updatePrices);
-$("#tcgp-btn").addEventListener("click", tcgpExport);
+$("#import-file").addEventListener("change", () => { const f = $("#import-file").files[0]; if (f) importCsv(f); $("#import-file").value = ""; });
 $("#catalog-btn").addEventListener("click", () => $("#catalog-file").click());
-$("#catalog-file").addEventListener("change", () => {
-  const fs = [...$("#catalog-file").files];
-  if (fs.length) catalogUpload(fs);
-  $("#catalog-file").value = "";
-});
+$("#catalog-file").addEventListener("change", () => { const fs = [...$("#catalog-file").files]; if (fs.length) catalogUpload(fs); $("#catalog-file").value = ""; });
+$("#prices-btn").addEventListener("click", updatePrices);
 $("#delete-btn").addEventListener("click", deleteInventory);
+$("#signout-btn").addEventListener("click", () => sb.auth.signOut());
 $("#signin-btn").addEventListener("click", signIn);
 $("#signup-btn").addEventListener("click", signUp);
 $("#auth-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(); });
-$("#signout-btn").addEventListener("click", () => sb.auth.signOut());
 $("#modal-backdrop").addEventListener("click", closeCard);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCard(); });
-$("#view-grid").addEventListener("click", () => { viewMode = "grid"; localStorage.setItem("sellViewMode", "grid"); $("#view-grid").classList.add("active"); $("#view-list").classList.remove("active"); render(); });
-$("#view-list").addEventListener("click", () => { viewMode = "list"; localStorage.setItem("sellViewMode", "list"); $("#view-list").classList.add("active"); $("#view-grid").classList.remove("active"); render(); });
-[["#f-channel", "channel"], ["#f-band", "band"]].forEach(([sel, key]) => {
-  $(sel).addEventListener("change", (e) => { filters[key] = e.target.value; render(); });
-});
-document.querySelectorAll("#sell-filters .chip").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const f = btn.dataset.filter, v = btn.dataset.value;
-    filters[f] = filters[f] === v ? "" : v;
-    btn.classList.toggle("active", filters[f] === v);
-    render();
-  });
-});
-$("#sell-sort").addEventListener("change", (e) => { sortKey = e.target.value; render(); });
-$("#sell-tag-filter").addEventListener("input", (e) => { filters.tag = e.target.value.trim(); render(); });
-$("#sell-search").addEventListener("input", (e) => { filters.search = e.target.value.trim(); render(); });
-$("#view-grid").classList.toggle("active", viewMode === "grid");
-$("#view-list").classList.toggle("active", viewMode === "list");
+window.addEventListener("hashchange", applyHash);
 
-boot();
+(async () => {
+  const last = localStorage.getItem("lastRoute");
+  if (!location.hash && last) history.replaceState(null, "", last);
+  const h = location.hash.replace(/^#\//, "").split("/");
+  station = ["decide", "prep", "cashout", "browse"].includes(h[0]) ? h[0] : "decide";
+  browseBucket = station === "browse" ? (h[1] || null) : null;
+  if (DEMO) { showApp(); return; }
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) showApp(); else showAuth();
+  sb.auth.onAuthStateChange((_e, s) => { if (s) showApp(); else showAuth(); });
+})();
