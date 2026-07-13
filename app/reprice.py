@@ -58,7 +58,7 @@ def run_reprice(export_path: str, limit: int = 0, notify_movers: bool = True,
     for inv in singles:
         nkey = natural_key(category=inv.category, set_name=inv.set_name,
                            card_number=inv.card_number, variance=inv.variance,
-                           product_name=inv.product_name)
+                           product_name=inv.product_name, grade=inv.grade)
         fresh = pricing.market_price(inv.product_name, inv.set_name, inv.card_number,
                                      inv.category, inv.variance, inv.grade)
         if fresh is not None:

@@ -82,8 +82,14 @@ export function parseCSV(text) {
 }
 
 // ── Natural key (parity with session.natural_key) ───────────────────────────
-export async function naturalKey(category, setName, number, variance, name) {
-  const raw = [category, setName, number, variance, name].map((x) => (x || "").trim().toLowerCase()).join("|");
+// Grade joins the hash ONLY when the card is graded: a PSA copy and its raw
+// twin are different assets and must not collide (a colliding import silently
+// dropped a PSA-10 Charizard). Ungraded keys are unchanged, so tags survive.
+export async function naturalKey(category, setName, number, variance, name, grade = "") {
+  const parts = [category, setName, number, variance, name].map((x) => (x || "").trim().toLowerCase());
+  const g = (grade || "").trim().toLowerCase();
+  if (g && g !== "ungraded") parts.push(g);
+  const raw = parts.join("|");
   const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(raw));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
 }
@@ -217,13 +223,92 @@ export async function pokemonImageUrl(setName, number) {
   return winner ? `https://images.pokemontcg.io/${winner}/${num}.png` : null;
 }
 
-// Scryfall's named-card endpoint IS an image URL (redirects to the card scan) —
-// no per-card pre-resolution needed. Fuzzy match may show a different printing's
-// art for reprints, but it's always the right card.
-export function mtgImageUrl(name) {
+// Scryfall's named-card endpoint IS an image URL (redirects to the card scan).
+// Fuzzy match returns an arbitrary printing — kept only as the fallback rung.
+export function mtgFuzzyImageUrl(name) {
   const clean = (name || "").replace(/\s*\([^)]*\)/g, "").split(" - ")[0].trim();
   if (!clean) return null;
   return "https://api.scryfall.com/cards/named?format=image&version=normal&fuzzy=" + encodeURIComponent(clean);
+}
+
+// Exact-printing art: /cards/{set_code}/{collector_number}?format=image 302s to
+// that printing's scan (borderless, showcase, etc. resolve correctly). Needs the
+// Scryfall set list once (cached 24h) to map Collectr set names → codes.
+let _mtgSets = null;
+async function loadMtgSets() {
+  if (_mtgSets) return _mtgSets;
+  try {
+    const cached = JSON.parse(localStorage.getItem("scryfallSets") || "null");
+    if (cached && Date.now() - cached.ts < 864e5) return (_mtgSets = cached.sets);
+  } catch (e) { /* refetch */ }
+  try {
+    const r = await fetch("https://api.scryfall.com/sets", { headers: { Accept: "application/json", "User-Agent": "sell-cockpit/1.0" } });
+    const sets = ((await r.json()).data || []).map((s) => (
+      { name: s.name, code: s.code, type: s.set_type, n: s.card_count }));
+    if (sets.length) { _mtgSets = sets; localStorage.setItem("scryfallSets", JSON.stringify({ ts: Date.now(), sets })); }
+    return _mtgSets || [];
+  } catch (e) { return []; }
+}
+
+const MTG_STOP = new Set(["the", "of", "and", "a", "an"]);
+const MTG_TYPE_RANK = { expansion: 9, core: 8, commander: 7, masters: 6, draft_innovation: 5, box: 4, duel_deck: 3, funny: 2, starter: 1 };
+const normMtgName = (s) => (s || "").toLowerCase().replace(/^universes beyond:?\s*/, "")
+  .replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+const _mtgCodeCache = new Map();
+
+function matchMtgSet(sets, collectrName) {
+  const key = normMtgName(collectrName);
+  if (_mtgCodeCache.has(key)) return _mtgCodeCache.get(key);
+  let code = null;
+  const wantsCommander = /\bcommander\b/.test(key);
+  const wantsArt = /\bart series\b/.test(key);
+  const wantsPromo = /\bpromos?\b/.test(key);
+  if (key.startsWith("secret lair")) code = "sld";
+  else if (key === "the list" || key === "the list reprints") code = "plst";
+  else {
+    const exact = sets.find((s) => normMtgName(s.name) === key);
+    if (exact) code = exact.code;
+    else {
+      const words = new Set(key.split(" ").filter((w) => !MTG_STOP.has(w)));
+      let best = null, bestScore = 0;
+      for (const s of sets) {
+        if (["token", "minigame", "alchemy"].includes(s.type)) continue;
+        if (s.type === "memorabilia" && !wantsArt) continue;
+        if (s.type === "promo" && !wantsPromo) continue;
+        if (wantsCommander && s.type !== "commander" && !/commander/i.test(s.name)) continue;
+        const sw = normMtgName(s.name).split(" ").filter((w) => !MTG_STOP.has(w));
+        if (!sw.length) continue;
+        const hit = sw.filter((w) => words.has(w)).length;
+        const score = hit / Math.max(words.size, sw.length);
+        if (score > bestScore || (score === bestScore && best &&
+            ((MTG_TYPE_RANK[s.type] || 0) > (MTG_TYPE_RANK[best.type] || 0) ||
+             ((MTG_TYPE_RANK[s.type] || 0) === (MTG_TYPE_RANK[best.type] || 0) && s.n > best.n)))) {
+          best = s; bestScore = score;
+        }
+      }
+      if (best && bestScore >= 0.5) code = best.code;
+    }
+  }
+  _mtgCodeCache.set(key, code);
+  return code;
+}
+
+function normMtgNumber(num) {
+  let n = (num || "").trim().replace(/^#/, "").replace(/\*$/, "★");
+  n = n.replace(/^0+(?=.)/, "");
+  const m = /^([a-z]+)-(\w+)$/i.exec(n);          // The List: prefix must be UPPERCASE
+  if (m) n = m[1].toUpperCase() + "-" + m[2];
+  return n;
+}
+
+export async function mtgImageUrl(name, setName, number) {
+  if (setName && number) {
+    const sets = await loadMtgSets();
+    const code = sets.length ? matchMtgSet(sets, setName) : null;
+    const num = normMtgNumber(number);
+    if (code && num) return `https://api.scryfall.com/cards/${code}/${encodeURIComponent(num)}?format=image&version=normal`;
+  }
+  return mtgFuzzyImageUrl(name);
 }
 
 // ── TCGplayer Seller Portal export helpers (matcher-lite, ported) ───────────
@@ -252,6 +337,15 @@ export function normNumTCGP(num) {
   return ((num || "").trim().split("/")[0]).replace(/^0+(?=\d)/, "");
 }
 
+// One Piece art: Limitless CDN is directly addressable from the card number
+// alone (OP01-001 → /one-piece/OP01/OP01-001_EN.webp) — no API, no auth.
+export function onePieceImageUrl(number) {
+  const num = (number || "").trim().toUpperCase();
+  const m = /^([A-Z]+\d*)-\w+$/.exec(num);
+  if (!m) return null;
+  return `https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/one-piece/${m[1]}/${num}_EN.webp`;
+}
+
 const COND_PREFIX = { NM: "Near Mint", LP: "Lightly Played", MP: "Moderately Played",
                       HP: "Heavily Played", DMG: "Damaged" };
 const PKMN_VAR_SUFFIX = { "Normal": "", "Holofoil": "Holofoil", "Reverse Holofoil": "Reverse Holofoil",
@@ -261,7 +355,7 @@ const PKMN_VAR_SUFFIX = { "Normal": "", "Holofoil": "Holofoil", "Reverse Holofoi
 
 export function tcgpCondition(category, variance, cond) {
   const prefix = COND_PREFIX[cond || "NM"] || "Near Mint";
-  if (category === "Magic: The Gathering") {
+  if (category === "Magic: The Gathering" || category === "One Piece") {
     if (variance === "Foil") return prefix + " Foil";
     if (variance === "Normal" || !variance) return prefix;
     return null;
@@ -276,8 +370,9 @@ export async function buildRows(csvText, existingByKey, onProgress) {
   const raw = parseCSV(csvText);
   const mkCol = Object.keys(raw[0] || {}).find((k) => k.startsWith("Market Price"));
   const out = [], seen = new Set();
-  let skipped = 0;
-  await loadSets();   // one fetch, cached — images resolve synchronously after
+  let skipped = 0, skippedValue = 0;
+  await loadSets();     // one fetch each, cached — images resolve synchronously after
+  await loadMtgSets();
 
   for (let i = 0; i < raw.length; i++) {
     if (onProgress && i % 400 === 0) onProgress(`Processing ${i}/${raw.length}…`);
@@ -287,10 +382,12 @@ export async function buildRows(csvText, existingByKey, onProgress) {
     const number = r["Card Number"] || "", variance = r["Variance"] || "";
     const rarity = r["Rarity"] || "", grade = r["Grade"] || "Ungraded";
     const qty = parseInt(r["Quantity"]) || 1;
-    const market = parseFloat(mkCol ? r[mkCol] : 0) || 0;
+    // Collectr writes thousands separators ("1,544.52") — parseFloat stops at
+    // the comma and a four-figure card imports as $1.
+    const market = parseFloat(String(mkCol ? r[mkCol] : "0").replace(/,/g, "")) || 0;
     if (!name) { skipped++; continue; }
 
-    const nkey = await naturalKey(category, setName, number, variance, name);
+    const nkey = await naturalKey(category, setName, number, variance, name, grade);
     if (seen.has(nkey)) continue;
     seen.add(nkey);
     const prev = existingByKey[nkey] || {};
@@ -305,17 +402,19 @@ export async function buildRows(csvText, existingByKey, onProgress) {
     const isSealed = SEALED_RE.test(name) || SEALED_BRACKET_RE.test(name);
     if (isGraded) bucket = "graded";
     else if (isSealed) bucket = "sealed";
-    else if (TOKEN_RE.test(name) || MISC_SETS.has(setName)) { skipped++; continue; }
+    else if (TOKEN_RE.test(name) || MISC_SETS.has(setName)) { skipped++; skippedValue += market * qty; continue; }
     else if (category === "Pokemon") { bucket = "pkmn"; if (JP_SETS.has(setName)) xflags.push("japanese"); }
     else if (category === "Magic: The Gathering") { bucket = "mtg"; if (setName.startsWith("Art Series:")) xflags.push("art-card"); }
     else if (category === "YuGiOh") bucket = "ygo";
-    else { skipped++; continue; }
+    else if (category === "One Piece") bucket = "op";
+    else { skipped++; skippedValue += market * qty; continue; }
 
     if (bucket === "graded" || bucket === "sealed") {
       // Graded cards use the same art as the ungraded card.
       const gimg = (bucket === "graded" && category === "Pokemon")
         ? await pokemonImageUrl(setName, number)
-        : (bucket === "graded" && category === "Magic: The Gathering") ? mtgImageUrl(name) : null;
+        : (bucket === "graded" && category === "Magic: The Gathering") ? await mtgImageUrl(name, setName, number)
+        : (bucket === "graded" && category === "One Piece") ? onePieceImageUrl(number) : null;
       out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance,
                  grade, qty, price: Math.round(market * qty * 100) / 100, market_price: market,
                  condition: "NM", channel: "", channel_reason: "", flags: [], band: "",
@@ -328,12 +427,14 @@ export async function buildRows(csvText, existingByKey, onProgress) {
     const route = routeRow(category, setName, rarity, name, variance, number, effective);
     let img = null;
     if (category === "Pokemon") img = await pokemonImageUrl(setName, number);
-    else if (category === "Magic: The Gathering") img = mtgImageUrl(name);
+    else if (category === "Magic: The Gathering") img = await mtgImageUrl(name, setName, number);
+    else if (category === "One Piece") img = onePieceImageUrl(number);
     out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance,
                grade: "", qty, price: effective, market_price: market, condition,
                ...route, flags: [...route.flags, ...xflags], psa10_real: false,
                keep, tags, image_url: img });
   }
   if (onProgress) onProgress(`Processed ${out.length} cards (${skipped} skipped)`);
+  out.meta = { skipped, skippedValue: Math.round(skippedValue * 100) / 100 };
   return out;
 }

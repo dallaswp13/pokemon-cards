@@ -116,7 +116,7 @@ def _nkey_inv(inv: InventoryRow) -> str:
     return session_db.natural_key(
         category=inv.category, set_name=inv.set_name,
         card_number=inv.card_number, variance=inv.variance,
-        product_name=inv.product_name,
+        product_name=inv.product_name, grade=inv.grade,
     )
 
 

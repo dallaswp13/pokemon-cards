@@ -100,10 +100,14 @@ def _migrate_legacy_per_session(conn: sqlite3.Connection) -> None:
 # ── Natural-key derivation ────────────────────────────────────────────────
 
 def natural_key(*, category: str, set_name: str, card_number: str,
-                variance: str, product_name: str) -> str:
+                variance: str, product_name: str, grade: str = "") -> str:
     """
     Build a stable identity key for an inventory row. Same card across exports
-    will produce the same key as long as these five fields don't change.
+    will produce the same key as long as these fields don't change.
+
+    Grade joins the hash ONLY when the card is graded (parity with the web
+    engine): a PSA copy and its raw twin are distinct assets and must not
+    collide. Ungraded keys are unchanged from the five-field era.
     """
     parts = [
         (category or "").strip().lower(),
@@ -112,6 +116,9 @@ def natural_key(*, category: str, set_name: str, card_number: str,
         (variance or "").strip().lower(),
         (product_name or "").strip().lower(),
     ]
+    g = (grade or "").strip().lower()
+    if g and g != "ungraded":
+        parts.append(g)
     raw = "|".join(parts)
     # Hash to keep keys compact and cheap to index
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]

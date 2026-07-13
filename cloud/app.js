@@ -3,7 +3,7 @@
    quick-actions on every card, exports living inside their Cash Out lanes.
    Vanilla JS + Supabase. ?demo=1 loads a sample collection with no writes. */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition } from "./engine.js";
+import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl } from "./engine.js";
 
 const SUPABASE_URL = "https://xmcohwtftpmnanootpia.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY29od3RmdHBtbmFub290cGlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODU5NTcsImV4cCI6MjA5OTI2MTk1N30.YVOa8JBdaJH9aXXsyUjOhdwKiohj4SZ6rVia36KfP0k";
@@ -15,7 +15,7 @@ const $ = (s) => document.querySelector(s);
 const CAP = 300;
 const COND_FACTORS = { NM: 1.0, LP: 0.9, MP: 0.75, HP: 0.6, DMG: 0.5 };
 const CONDS = ["NM", "LP", "MP", "HP", "DMG"];
-const GAMES = [["pkmn", "Pokemon"], ["mtg", "MTG"], ["ygo", "Yu-Gi-Oh"]];
+const GAMES = [["pkmn", "Pokemon"], ["mtg", "MTG"], ["ygo", "Yu-Gi-Oh"], ["op", "One Piece"]];
 const DECISIONS = [
   { key: "sell",  icon: "i-sell",  label: "Sell",  aria: "Sell as-is" },
   { key: "keep",  icon: "i-keep",  label: "Keep",  aria: "Keep — personal collection" },
@@ -44,7 +44,7 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": 
 const ico = (name, size = "") => `<svg class="ic ${size}" aria-hidden="true"><use href="#${name}"/></svg>`;
 const hasTag = (r, t) => (r.tags || []).includes(t);
 const offC = (r) => hasTag(r, "off-center");
-const isRaw = (b) => ["pkmn", "mtg", "ygo"].includes(b);
+const isRaw = (b) => ["pkmn", "mtg", "ygo", "op"].includes(b);
 const decisionOf = (r) => r.keep ? "keep" : hasTag(r, "sell") ? "sell" : hasTag(r, "to-grade") ? "grade" : hasTag(r, "shop") ? "shop" : hasTag(r, "not-nm") ? "check" : null;
 const decided = (r) => decisionOf(r) !== null;
 const SORTS = {
@@ -60,22 +60,30 @@ const tally = () => parseInt(localStorage.getItem(tallyKey()) || "0");
 const bumpTally = (d) => localStorage.setItem(tallyKey(), Math.max(0, tally() + d));
 
 // ── Data ─────────────────────────────────────────────────────────────────────
+// Concurrent loads (boot + onAuthStateChange both firing) used to interleave
+// their pushes into the shared rows array, showing every card twice. Each load
+// now builds privately and only the newest one may publish.
+let loadSeq = 0;
 async function load() {
+  const seq = ++loadSeq;
   if (DEMO) {
     const { DEMO_ROWS } = await import("./demo.js");
+    if (seq !== loadSeq) return;
     rows = DEMO_ROWS;
     renderAll();
     return;
   }
-  rows = [];
+  const acc = [];
   for (let from = 0; from < 20000; from += 1000) {
     const { data, error } = await sb.from("cards").select("*")
       .order("price", { ascending: false }).order("id", { ascending: true })
       .range(from, from + 999);
+    if (seq !== loadSeq) return;
     if (error) { setStatus(error.message); return; }
-    rows.push(...(data || []));
+    acc.push(...(data || []));
     if (!data || data.length < 1000) break;
   }
+  rows = acc;
   renderAll();
 }
 
@@ -225,6 +233,11 @@ function renderAll() {
 }
 
 // ── Shared card pieces ───────────────────────────────────────────────────────
+// Variance is part of the identity line: a Foil and a Normal of the same card
+// are different rows, and hiding the variance made them read as duplicates.
+function subLine(r) {
+  return `${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}${r.variance && r.variance !== "Normal" ? " · " + esc(r.variance) : ""}`;
+}
 function metaLine(r) {
   if (!isRaw(r.bucket)) {
     const label = r.grade && r.grade !== "Ungraded" ? r.grade : r.bucket === "sealed" ? "Sealed — hold" : "Hold";
@@ -242,9 +255,10 @@ function decideRow(r, compact = false) {
     `<button data-file="${d.key}" class="${cur === d.key ? "on" : ""}" title="${d.aria}" aria-label="${d.aria}">${ico(d.icon, compact ? "s" : "")}</button>`).join("") + `</div>`;
 }
 function imgTag(r, cls = "") {
-  return r.image_url
-    ? `<img ${cls ? `class="${cls}"` : ""} loading="lazy" src="${r.image_url}" onerror="this.classList.add('broken')" alt="">`
-    : `<div class="noimg">${r.bucket === "sealed" ? ico("i-box", "l") : ico("i-grid")}</div>`;
+  if (!r.image_url) return `<div class="noimg">${r.bucket === "sealed" ? ico("i-box", "l") : ico("i-grid")}</div>`;
+  const fb = r.bucket === "mtg" ? mtgFuzzyImageUrl(r.name) : null;
+  const fbAttr = fb && fb !== r.image_url ? ` data-fb="${esc(fb)}"` : "";
+  return `<img ${cls ? `class="${cls}"` : ""} loading="lazy" src="${r.image_url}"${fbAttr} onerror="if(this.dataset.fb){this.src=this.dataset.fb;delete this.dataset.fb}else{this.classList.add('broken')}" alt="">`;
 }
 function badges(r) {
   const b = [];
@@ -271,7 +285,7 @@ function tile(r, showPile = false) {
     <div class="tile-img">${imgTag(r)}<div class="tile-badges">${badges(r)}</div></div>
     <div class="tile-body">
       <div class="t-name">${esc(r.name)}</div>
-      <div class="t-sub">${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}</div>
+      <div class="t-sub">${subLine(r)}</div>
       <div class="t-price"><span class="p num">${money2(r.price)}</span>${(r.qty || 1) > 1 ? `<span class="q num">×${r.qty}</span>` : ""}${cond}</div>
       ${metaLine(r)}
       ${fl.length || (showPile && pile) ? `<div class="t-flags">${showPile && pile ? `<span class="pile-chip">${DLABEL[pile]}</span>` : ""}${fl.slice(0, 2).join("")}</div>` : ""}
@@ -288,7 +302,7 @@ function listRow(r) {
   el.className = "rowc";
   el.innerHTML = `
     ${imgTag(r)}
-    <div class="r-main"><div class="r-name">${esc(r.name)}</div><div class="r-sub">${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}</div></div>
+    <div class="r-main"><div class="r-name">${esc(r.name)}</div><div class="r-sub">${subLine(r)}</div></div>
     <div class="r-price num">${money2(r.price)}${(r.qty || 1) > 1 ? ` <span class="dim">×${r.qty}</span>` : ""}</div>
     ${decideRow(r, true)}`;
   el.addEventListener("click", () => openCard(r));
@@ -319,7 +333,7 @@ function renderDecide() {
   const pool = s.undecided.filter((r) => (!gameChip || r.bucket === gameChip) && passes(r));
   pool.sort(SORTS[sortKey] || SORTS.value);
 
-  const chips = GAMES.map(([key, label]) => {
+  const chips = GAMES.filter(([key]) => rows.some((r) => r.bucket === key)).map(([key, label]) => {
     const g = s.undecided.filter((r) => r.bucket === key);
     const val = g.reduce((a, r) => a + r.price * (r.qty || 1), 0);
     return `<button class="gchip ${gameChip === key ? "active" : ""}" data-chip="${key}">${label}
@@ -466,7 +480,7 @@ function renderTable(pool) {
     if (i === kfocus) tr.classList.add("kfocus");
     tr.innerHTML = `
       <td>${r.image_url ? `<img class="th" loading="lazy" src="${r.image_url}" alt="">` : ""}</td>
-      <td><div class="cell-name">${esc(r.name)}</div><div class="cell-sub">${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}</div></td>
+      <td><div class="cell-name">${esc(r.name)}</div><div class="cell-sub">${subLine(r)}</div></td>
       <td>${r.condition && r.condition !== "NM" ? `<span class="fl" style="border-color:var(--amber);color:var(--amber);font-size:11px;border:1px solid;border-radius:4px;padding:0 5px">${r.condition}</span>` : ""}</td>
       <td class="num dim">${(r.qty || 1) > 1 ? "×" + r.qty : ""}</td>
       <td class="num">${money2(r.market_price || r.price)}</td>
@@ -661,7 +675,7 @@ function ledger(s) {
 
 // ── BROWSE ───────────────────────────────────────────────────────────────────
 const BUCKETS = [["pkmn", "Pokemon", "i-grid"], ["mtg", "MTG", "i-grid"], ["ygo", "Yu-Gi-Oh", "i-grid"],
-                 ["graded", "Graded", "i-award"], ["sealed", "Sealed", "i-box"]];
+                 ["op", "One Piece", "i-grid"], ["graded", "Graded", "i-award"], ["sealed", "Sealed", "i-box"]];
 function renderBrowse() {
   const v = $("#view-browse");
   v.innerHTML = "";
@@ -670,6 +684,7 @@ function renderBrowse() {
     g.className = "cat-grid";
     BUCKETS.forEach(([key, label, icon]) => {
       const rs = rows.filter((r) => r.bucket === key);
+      if (!rs.length) return;
       const val = rs.reduce((a, r) => a + r.price * (isRaw(key) ? (r.qty || 1) : 1), 0);
       const c = document.createElement("button");
       c.className = "cat-card";
@@ -821,7 +836,7 @@ async function trendHtml(r) {
 
 // ── eBay listing text ────────────────────────────────────────────────────────
 function ebayListingText(r) {
-  const game = r.bucket === "pkmn" ? "Pokemon TCG" : r.bucket === "mtg" ? "MTG Magic" : "Yu-Gi-Oh";
+  const game = r.bucket === "pkmn" ? "Pokemon TCG" : r.bucket === "mtg" ? "MTG Magic" : r.bucket === "op" ? "One Piece Card Game" : "Yu-Gi-Oh";
   let title = `${game} ${r.name} ${r.set_name} ${r.number || ""} ${r.condition || "NM"}`.replace(/\s+/g, " ").trim();
   if (title.length > 80) title = title.slice(0, 80).trim();
   const list = Math.round((+r.market_price || +r.price) * 1.15 * 100) / 100;
@@ -879,7 +894,7 @@ async function tcgpExport() {
   const worker = async () => {
     while (queue.length) {
       const r = queue.shift();
-      const cond = tcgpCondition(r.category || (r.bucket === "mtg" ? "Magic: The Gathering" : "Pokemon"), r.variance, r.condition);
+      const cond = tcgpCondition(r.bucket === "mtg" ? "Magic: The Gathering" : r.bucket === "op" ? "One Piece" : "Pokemon", r.variance, r.condition);
       const setName = TCGP_SET_ALIASES[(r.set_name || "").trim()] || r.set_name;
       const numN = normNumTCGP(r.number);
       if (!cond || !numN) { unmatched.push(r); continue; }
@@ -952,7 +967,8 @@ async function importCsv(file) {
       const ins = await sb.from("cards").insert(cards.slice(i, i + 500));
       if (ins.error) { setStatus("Import failed: " + ins.error.message); return; }
     }
-    toast(`Imported ${cards.length} cards`);
+    const skipV = cards.meta?.skippedValue || 0;
+    toast(`Imported ${cards.length} cards${skipV >= 1 ? ` · left out ${money(skipV)} of tokens/misc (not sellable as singles)` : ""}`, null, 6000);
     load();
   } catch (e) { setStatus("Import failed: " + (e.message || e)); }
 }
@@ -1101,7 +1117,16 @@ window.addEventListener("resize", () => {
   station = ["decide", "prep", "cashout", "browse"].includes(h[0]) ? h[0] : "decide";
   browseBucket = station === "browse" ? (h[1] || null) : null;
   if (DEMO) { showApp(); return; }
+  // React only when signed-in/out actually flips — INITIAL_SESSION, SIGNED_IN
+  // on tab focus, and TOKEN_REFRESHED all re-fire with the same presence.
+  let authed = null;
+  const onAuth = (s) => {
+    const has = !!s;
+    if (has === authed) return;
+    authed = has;
+    if (has) showApp(); else showAuth();
+  };
   const { data: { session } } = await sb.auth.getSession();
-  if (session) showApp(); else showAuth();
-  sb.auth.onAuthStateChange((_e, s) => { if (s) showApp(); else showAuth(); });
+  onAuth(session);
+  sb.auth.onAuthStateChange((_e, s) => onAuth(s));
 })();
