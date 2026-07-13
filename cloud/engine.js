@@ -415,7 +415,7 @@ export async function buildRows(csvText, existingByKey, onProgress) {
         ? await pokemonImageUrl(setName, number)
         : (bucket === "graded" && category === "Magic: The Gathering") ? await mtgImageUrl(name, setName, number)
         : (bucket === "graded" && category === "One Piece") ? onePieceImageUrl(number) : null;
-      out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance,
+      out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance, rarity,
                  grade, qty, price: Math.round(market * qty * 100) / 100, market_price: market,
                  condition: "NM", channel: "", channel_reason: "", flags: [], band: "",
                  psa10: 0, psa10_real: false, psa10_x: 0, shop_trade: 0, shop_cash: 0,
@@ -429,7 +429,7 @@ export async function buildRows(csvText, existingByKey, onProgress) {
     if (category === "Pokemon") img = await pokemonImageUrl(setName, number);
     else if (category === "Magic: The Gathering") img = await mtgImageUrl(name, setName, number);
     else if (category === "One Piece") img = onePieceImageUrl(number);
-    out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance,
+    out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance, rarity,
                grade: "", qty, price: effective, market_price: market, condition,
                ...route, flags: [...route.flags, ...xflags], psa10_real: false,
                keep, tags, image_url: img });

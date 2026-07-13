@@ -24,15 +24,22 @@ const DECISIONS = [
   { key: "check", icon: "i-check", label: "Check", aria: "Check condition" },
 ];
 const DKEY_TAG = { sell: "sell", grade: "to-grade", shop: "shop", check: "not-nm" };
+// Piles unify the old Decide/Browse split: one grid, one selector. "undecided"
+// is the working queue; the rest are where filed cards live (incl. Keep).
+const PILES = [
+  ["undecided", "Undecided"], ["sell", "Sell"], ["keep", "Keep"], ["grade", "Grade"],
+  ["shop", "Shop"], ["check", "Check"], ["graded", "Graded"], ["sealed", "Sealed"], ["all", "All"],
+];
 
 let rows = [];
 let station = "decide";
-let browseBucket = null;
+let pileKey = "undecided";
 let gameChip = localStorage.getItem("gameChip") || "";
 let viewMode = localStorage.getItem("viewMode") || "grid";
 let sortKey = "value";
-let filtersOpen = false;
-const filters = { channel: "", band: "", grade: "", oc: "", tag: "", search: "" };
+// Multi-select facets: within a facet any selected value passes (OR); facets
+// combine with AND — "illustration rares under $1" = rarity ∪ price band.
+const filters = { search: "", price: new Set(), route: new Set(), rarity: new Set(), grade: false, oc: false };
 let kfocus = -1;
 let undoState = null;
 let toastTimer = null;
@@ -49,10 +56,22 @@ const decisionOf = (r) => r.keep ? "keep" : hasTag(r, "sell") ? "sell" : hasTag(
 const decided = (r) => decisionOf(r) !== null;
 const SORTS = {
   value: (a, b) => b.price - a.price,
+  valueasc: (a, b) => a.price - b.price,
   market: (a, b) => b.market_price - a.market_price,
   psa10x: (a, b) => (b.psa10_x || 0) - (a.psa10_x || 0),
   netpct: (a, b) => (b.net_pct || 0) - (a.net_pct || 0),
 };
+
+// Rows visible in a pile (before game chip / facet filters).
+function pileRows(key) {
+  if (key === "all") return rows;
+  if (key === "graded" || key === "sealed") return rows.filter((r) => r.bucket === key);
+  const raw = rows.filter((r) => isRaw(r.bucket));
+  if (key === "undecided") return raw.filter((r) => !decided(r));
+  const map = { sell: "sell", grade: "to-grade", shop: "shop", check: "not-nm" };
+  if (key === "keep") return raw.filter((r) => r.keep);
+  return raw.filter((r) => hasTag(r, map[key]));
+}
 
 // ── Session tally ────────────────────────────────────────────────────────────
 const tallyKey = () => "decided-" + new Date().toISOString().slice(0, 10);
@@ -161,7 +180,7 @@ function ladder(s) {
   if (s.tcgpReady.length) rungs.push({ label: "Export TCGplayer sheet", go: () => nav("cashout") });
   if (s.shopRows.length) rungs.push({ label: "Download drop-off sheet", go: () => nav("cashout") });
   if (s.ebayReady.length) rungs.push({ label: `List ${s.ebayReady.length} on eBay`, go: () => nav("cashout") });
-  if (!rungs.length) rungs.push({ label: "Line is clear", go: () => nav("browse") });
+  if (!rungs.length) rungs.push({ label: "Line is clear", go: () => nav("decide", "all") });
   return rungs;
 }
 
@@ -191,14 +210,19 @@ function renderStrip() {
 }
 
 // ── Stations nav + router ────────────────────────────────────────────────────
-function nav(st, bucket = null) {
-  location.hash = bucket ? `#/browse/${bucket}` : `#/${st}`;
+function nav(st, pk = null) {
+  location.hash = st === "decide" && pk ? `#/decide/${pk}` : `#/${st}`;
 }
 function applyHash() {
   const h = location.hash.replace(/^#\//, "");
-  const [st, bucket] = h.split("/");
-  station = ["decide", "prep", "cashout", "browse"].includes(st) ? st : "decide";
-  browseBucket = station === "browse" ? (bucket || null) : null;
+  const [st, sub] = h.split("/");
+  if (st === "browse") {   // legacy route from v5 bookmarks
+    station = "decide";
+    pileKey = ["graded", "sealed"].includes(sub) ? sub : "all";
+  } else {
+    station = ["decide", "prep", "cashout"].includes(st) ? st : "decide";
+    if (station === "decide") pileKey = PILES.some(([k]) => k === sub) ? sub : "undecided";
+  }
   localStorage.setItem("lastRoute", location.hash);
   renderAll();
 }
@@ -208,13 +232,12 @@ function renderStations() {
   const readyNet = s.sellRows.concat(s.shopRows).reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
   const prepCount = s.checkRows.length + s.gradePile.length + s.photosNeeded.length;
   const defs = [
-    ["decide", "Decide", "i-check", `${s.undecided.length}`],
+    ["decide", "Cards", "i-grid", `${s.undecided.length}`],
     ["prep", "Prep", "i-camera", `${prepCount}`],
     ["cashout", "Cash Out", "i-export", money(readyNet), true],
-    ["browse", "Browse", "i-grid", ""],
   ];
   $("#stations").innerHTML = defs.map(([key, label, icon, pill, isMoney]) =>
-    `<button class="${key === station ? "active" : ""} ${key === "browse" ? "browse" : ""}" data-st="${key}">
+    `<button class="${key === station ? "active" : ""}" data-st="${key}">
       ${ico(icon)}<span>${label}</span>${pill ? `<span class="st-pill num ${isMoney ? "money" : ""}">${pill}</span>` : ""}
     </button>`).join("");
   document.querySelectorAll("#stations button").forEach((b) =>
@@ -225,11 +248,10 @@ function renderAll() {
   renderStrip();
   renderStations();
   ["decide", "prep", "cashout", "browse"].forEach((k) =>
-    $(`#view-${k}`).classList.toggle("hidden", k !== station));
+    $(`#view-${k}`)?.classList.toggle("hidden", k !== station));
   if (station === "decide") renderDecide();
   else if (station === "prep") renderPrep();
   else if (station === "cashout") renderCashout();
-  else renderBrowse();
 }
 
 // ── Shared card pieces ───────────────────────────────────────────────────────
@@ -272,7 +294,7 @@ function wireFileButtons(el, r) {
     b.addEventListener("click", (ev) => { ev.stopPropagation(); fileCard(r, b.dataset.file, el.closest(".tile")); }));
 }
 
-function tile(r, showPile = false) {
+function tile(r, showPile = false, ctx = null) {
   const el = document.createElement("div");
   el.className = "tile";
   const cond = r.condition && r.condition !== "NM" ? `<span class="cond">${r.condition}</span>` : "";
@@ -291,13 +313,13 @@ function tile(r, showPile = false) {
       ${fl.length || (showPile && pile) ? `<div class="t-flags">${showPile && pile ? `<span class="pile-chip">${DLABEL[pile]}</span>` : ""}${fl.slice(0, 2).join("")}</div>` : ""}
     </div>
     ${isRaw(r.bucket) ? decideRow(r) : ""}`;
-  el.querySelector(".tile-body").addEventListener("click", () => openCard(r));
-  el.querySelector(".tile-img").addEventListener("click", () => openCard(r));
+  el.querySelector(".tile-body").addEventListener("click", () => openCard(r, ctx));
+  el.querySelector(".tile-img").addEventListener("click", () => openCard(r, ctx));
   wireFileButtons(el, r);
   return el;
 }
 
-function listRow(r) {
+function listRow(r, ctx = null) {
   const el = document.createElement("div");
   el.className = "rowc";
   el.innerHTML = `
@@ -305,49 +327,85 @@ function listRow(r) {
     <div class="r-main"><div class="r-name">${esc(r.name)}</div><div class="r-sub">${subLine(r)}</div></div>
     <div class="r-price num">${money2(r.price)}${(r.qty || 1) > 1 ? ` <span class="dim">×${r.qty}</span>` : ""}</div>
     ${decideRow(r, true)}`;
-  el.addEventListener("click", () => openCard(r));
+  el.addEventListener("click", () => openCard(r, ctx));
   wireFileButtons(el, r);
   return el;
 }
 
-// ── DECIDE ───────────────────────────────────────────────────────────────────
+// ── CARDS (Decide + piles) ───────────────────────────────────────────────────
 function passes(r) {
-  if (filters.channel && r.channel !== filters.channel) return false;
-  if (filters.band && r.band !== filters.band) return false;
+  if (filters.price.size && !filters.price.has(r.band)) return false;
+  if (filters.route.size && !filters.route.has(r.channel)) return false;
+  if (filters.rarity.size && !filters.rarity.has(r.rarity || "")) return false;
   if (filters.grade && !r.grade_flag) return false;
   if (filters.oc && !offC(r)) return false;
-  if (filters.tag && !(r.tags || []).some((x) => x.includes(filters.tag.toLowerCase()))) return false;
   if (filters.search) {
     const q = filters.search.toLowerCase();
-    if (!((r.name || "") + " " + (r.set_name || "")).toLowerCase().includes(q)) return false;
+    if (!((r.name || "") + " " + (r.set_name || "") + " " + (r.rarity || "")).toLowerCase().includes(q)) return false;
   }
   return true;
 }
-const activeFilterCount = () => ["channel", "band", "grade", "oc", "tag"].filter((k) => filters[k]).length;
+
+// The current visible pool: pile → game chip → facets → sort. Modal navigation
+// walks this same list, so what you see is what "next card" means.
+function currentPool() {
+  const base = pileRows(pileKey);
+  const pool = base.filter((r) => (!gameChip || r.bucket === gameChip) && passes(r));
+  pool.sort(SORTS[sortKey] || SORTS.value);
+  return pool;
+}
+
+const FACET_PRICE = [["o50", "$50+"], ["5_50", "$5–50"], ["1_5", "$1–5"], ["u1", "<$1"]];
+const FACET_ROUTE = [["eBay (auction)", "eBay auction"], ["eBay (fixed)", "eBay fixed"], ["TCGplayer", "TCGplayer"], ["LCS", "Shop"]];
 
 function renderDecide() {
   const v = $("#view-decide");
   const s = stats();
   if (!rows.length) { v.innerHTML = ""; v.appendChild(firstRun()); return; }
 
-  const pool = s.undecided.filter((r) => (!gameChip || r.bucket === gameChip) && passes(r));
-  pool.sort(SORTS[sortKey] || SORTS.value);
+  const base = pileRows(pileKey);
+  const pool = currentPool();
+  const rawPile = !["graded", "sealed"].includes(pileKey);
 
-  const chips = GAMES.filter(([key]) => rows.some((r) => r.bucket === key)).map(([key, label]) => {
-    const g = s.undecided.filter((r) => r.bucket === key);
+  const pileHtml = PILES.map(([key, label]) => {
+    const n = pileRows(key).length;
+    if (!n && key !== "undecided") return "";
+    return `<button class="pchip ${pileKey === key ? "active" : ""}" data-pile="${key}">${label}<span class="c num">${n}</span></button>`;
+  }).join("");
+
+  const gameBase = (key) => base.filter((r) => r.bucket === key);
+  const chips = !rawPile ? "" : GAMES.filter(([key]) => rows.some((r) => r.bucket === key)).map(([key, label]) => {
+    const g = gameBase(key);
     const val = g.reduce((a, r) => a + r.price * (r.qty || 1), 0);
     return `<button class="gchip ${gameChip === key ? "active" : ""}" data-chip="${key}">${label}
       <span class="v num">${money(val)}</span><span class="c num">${g.length}</span></button>`;
   }).join("");
+  const allVal = base.reduce((a, r) => a + r.price * (isRaw(r.bucket) ? (r.qty || 1) : 1), 0);
 
-  const staleBanner = priceBannerHtml(s);
+  // Rarity facet is data-driven: the rarities actually present in this pile+game,
+  // busiest first. Mirrors how the physical binder is organized.
+  const gamePool = base.filter((r) => !gameChip || r.bucket === gameChip);
+  const rarCounts = new Map();
+  gamePool.forEach((r) => { const k = r.rarity || ""; if (k) rarCounts.set(k, (rarCounts.get(k) || 0) + 1); });
+  const rarities = [...rarCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  [...filters.rarity].forEach((k) => { if (!rarCounts.has(k)) filters.rarity.delete(k); });
+
+  const fchip = (facet, key, label, extra = "") =>
+    `<button class="fchip ${filters[facet] instanceof Set ? (filters[facet].has(key) ? "active" : "") : (filters[facet] ? "active" : "")}"
+      data-facet="${facet}" data-fkey="${esc(key)}">${label}${extra}</button>`;
+
   v.innerHTML = `
-    ${DEMO ? "" : staleBanner}
-    <div class="chips"><button class="gchip ${!gameChip ? "active" : ""}" data-chip="">All games</button>${chips}</div>
+    ${DEMO ? "" : priceBannerHtml(s)}
+    <div class="chips pile-row">${pileHtml}</div>
+    <div class="chips">
+      <button class="gchip ${!gameChip ? "active" : ""}" data-chip="">All games
+        <span class="v num">${money(allVal)}</span><span class="c num">${base.length}</span></button>${chips}
+    </div>
     <div class="toolbar">
-      <input type="search" id="q" placeholder="Search name or set…" value="${esc(filters.search)}" />
+      <input type="search" id="q" placeholder="Search name, set, rarity…" value="${esc(filters.search)}" />
       <select id="sortsel">
         <option value="value" ${sortKey === "value" ? "selected" : ""}>Highest value</option>
+        <option value="valueasc" ${sortKey === "valueasc" ? "selected" : ""}>Lowest value</option>
         <option value="psa10x" ${sortKey === "psa10x" ? "selected" : ""}>PSA-10 multiple</option>
         <option value="netpct" ${sortKey === "netpct" ? "selected" : ""}>Best net %</option>
       </select>
@@ -355,71 +413,64 @@ function renderDecide() {
         <button id="vm-grid" class="${viewMode === "grid" ? "active" : ""}" aria-label="Grid view">${ico("i-grid")}</button>
         <button id="vm-list" class="${viewMode === "list" ? "active" : ""}" aria-label="List view">${ico("i-list")}</button>
       </div>
-      <button id="filter-btn" class="ghost">${ico("i-filter")} Filter ${activeFilterCount() ? `<span class="fbadge">${activeFilterCount()}</span>` : ""}</button>
     </div>
-    <div id="filter-panel" class="filter-panel ${filtersOpen ? "" : "hidden"}">
-      <select id="f-channel">
-        <option value="">All channels</option><option value="eBay (auction)">eBay auction</option>
-        <option value="eBay (fixed)">eBay fixed</option><option value="TCGplayer">TCGplayer</option><option value="LCS">LCS (shop)</option>
-      </select>
-      <select id="f-band">
-        <option value="">All prices</option><option value="o50">$50+</option><option value="5_50">$5–50</option>
-        <option value="1_5">$1–5</option><option value="u1">Under $1</option>
-      </select>
-      <button class="tog-chip ${filters.grade ? "active" : ""}" id="f-grade">Grade candidates</button>
-      <button class="tog-chip ${filters.oc ? "active" : ""}" id="f-oc">Off-center</button>
-      <input type="text" id="f-tag" placeholder="tag…" value="${esc(filters.tag)}" style="width:120px" />
+    ${rawPile ? `
+    <div class="filter-bar">
+      <span class="fgroup">Price</span>${FACET_PRICE.map(([k, l]) => fchip("price", k, l)).join("")}
+      <span class="fgroup">Route</span>${FACET_ROUTE.map(([k, l]) => fchip("route", k, l)).join("")}
+      <span class="fgroup"></span>
+      <button class="fchip ${filters.grade ? "active" : ""}" data-facet="grade" data-fkey="">Grade candidates</button>
+      <button class="fchip ${filters.oc ? "active" : ""}" data-facet="oc" data-fkey="">Off-center</button>
+      ${filters.price.size || filters.route.size || filters.rarity.size || filters.grade || filters.oc
+        ? `<button class="fchip clear" id="f-clear">${ico("i-x", "s")} Clear</button>` : ""}
     </div>
+    ${rarities.length ? `<div class="filter-bar rar">
+      <span class="fgroup">Rarity</span>${rarities.map(([k, n]) => fchip("rarity", k, esc(k), ` <span class="fc num">${n}</span>`)).join("")}
+    </div>` : ""}` : ""}
     <div id="decide-body"></div>`;
-  $("#f-channel").value = filters.channel; $("#f-band").value = filters.band;
 
   const body = $("#decide-body");
-  if (!pool.length) {
-    body.appendChild(decideEmpty(s));
-  } else if (viewMode === "list" && window.innerWidth >= 960) {
-    body.appendChild(renderTable(pool.slice(0, CAP)));
-  } else if (viewMode === "list") {
-    const wrap = document.createElement("div"); wrap.className = "rows";
-    pool.slice(0, CAP).forEach((r) => wrap.appendChild(listRow(r)));
-    body.appendChild(wrap);
-  } else {
-    const g = document.createElement("div"); g.className = "grid";
-    pool.slice(0, CAP).forEach((r) => g.appendChild(tile(r)));
-    body.appendChild(g);
+  function fillBody() {
+    const pool2 = currentPool();
+    body.innerHTML = "";
+    if (!pool2.length) { body.appendChild(decideEmpty(stats())); return; }
+    if (viewMode === "list" && window.innerWidth >= 960) body.appendChild(renderTable(pool2.slice(0, CAP)));
+    else if (viewMode === "list") { const w = document.createElement("div"); w.className = "rows"; pool2.slice(0, CAP).forEach((r, i) => w.appendChild(listRow(r, { pool: pool2, i }))); body.appendChild(w); }
+    else { const g = document.createElement("div"); g.className = "grid"; pool2.slice(0, CAP).forEach((r, i) => g.appendChild(tile(r, pileKey === "all", { pool: pool2, i }))); body.appendChild(g); }
+    if (pool2.length > CAP) body.insertAdjacentHTML("beforeend", `<div class="trunc-note num">Showing ${CAP} of ${pool2.length.toLocaleString()} — sort or filter to reach the rest.</div>`);
   }
-  if (pool.length > CAP) body.insertAdjacentHTML("beforeend",
-    `<div class="trunc-note num">Showing ${CAP} of ${pool.length.toLocaleString()} — sort or filter to reach the rest.</div>`);
+  fillBody();
 
   // wiring
+  document.querySelectorAll("[data-pile]").forEach((b) => b.addEventListener("click", () => nav("decide", b.dataset.pile)));
   document.querySelectorAll("[data-chip]").forEach((b) => b.addEventListener("click", () => {
     gameChip = b.dataset.chip; localStorage.setItem("gameChip", gameChip); renderDecide();
   }));
-  $("#q").addEventListener("input", (e) => { filters.search = e.target.value.trim(); refreshBody(); });
-  $("#sortsel").addEventListener("change", (e) => { sortKey = e.target.value; renderDecide(); });
+  document.querySelectorAll(".filter-bar [data-facet]").forEach((b) => b.addEventListener("click", () => {
+    const f = b.dataset.facet, k = b.dataset.fkey;
+    if (filters[f] instanceof Set) { filters[f].has(k) ? filters[f].delete(k) : filters[f].add(k); }
+    else filters[f] = !filters[f];
+    renderDecide();
+  }));
+  $("#f-clear")?.addEventListener("click", () => {
+    filters.price.clear(); filters.route.clear(); filters.rarity.clear();
+    filters.grade = false; filters.oc = false;
+    renderDecide();
+  });
+  $("#q").addEventListener("input", (e) => { filters.search = e.target.value.trim(); fillBody(); });
+  $("#sortsel").addEventListener("change", (e) => { sortKey = e.target.value; fillBody(); });
   $("#vm-grid").addEventListener("click", () => { viewMode = "grid"; localStorage.setItem("viewMode", "grid"); renderDecide(); });
   $("#vm-list").addEventListener("click", () => { viewMode = "list"; localStorage.setItem("viewMode", "list"); renderDecide(); });
-  $("#filter-btn").addEventListener("click", () => { filtersOpen = !filtersOpen; $("#filter-panel").classList.toggle("hidden", !filtersOpen); });
-  $("#f-channel").addEventListener("change", (e) => { filters.channel = e.target.value; refreshBody(); });
-  $("#f-band").addEventListener("change", (e) => { filters.band = e.target.value; refreshBody(); });
-  $("#f-grade").addEventListener("click", () => { filters.grade = !filters.grade; renderDecide(); });
-  $("#f-oc").addEventListener("click", () => { filters.oc = !filters.oc; renderDecide(); });
-  $("#f-tag").addEventListener("input", (e) => { filters.tag = e.target.value.trim(); refreshBody(); });
-
-  function refreshBody() { // re-render only the body (keeps focus in inputs)
-    const s2 = stats();
-    const pool2 = s2.undecided.filter((r) => (!gameChip || r.bucket === gameChip) && passes(r)).sort(SORTS[sortKey] || SORTS.value);
-    body.innerHTML = "";
-    if (!pool2.length) { body.appendChild(decideEmpty(s2)); return; }
-    if (viewMode === "list" && window.innerWidth >= 960) body.appendChild(renderTable(pool2.slice(0, CAP)));
-    else if (viewMode === "list") { const w = document.createElement("div"); w.className = "rows"; pool2.slice(0, CAP).forEach((r) => w.appendChild(listRow(r))); body.appendChild(w); }
-    else { const g = document.createElement("div"); g.className = "grid"; pool2.slice(0, CAP).forEach((r) => g.appendChild(tile(r))); body.appendChild(g); }
-    if (pool2.length > CAP) body.insertAdjacentHTML("beforeend", `<div class="trunc-note num">Showing ${CAP} of ${pool2.length.toLocaleString()} — sort or filter to reach the rest.</div>`);
-  }
 }
 
 function decideEmpty(s) {
   const el = document.createElement("div");
   el.className = "empty";
+  if (pileKey !== "undecided") {
+    el.innerHTML = `${ico("i-search", "l")}<h4>Nothing in ${PILES.find(([k]) => k === pileKey)?.[1] || pileKey}${gameChip || filters.search ? " matching this view" : ""}.</h4>
+      <p>${pileKey === "keep" ? "The ★ Keep quick-action files cards here." : "Filter, search, or file some cards."}</p>`;
+    return el;
+  }
   if (gameChip && s.undecided.length) {
     const other = GAMES.find(([k]) => k !== gameChip && s.undecided.some((r) => r.bucket === k));
     const label = GAMES.find(([k]) => k === gameChip)?.[1] || gameChip;
@@ -477,6 +528,7 @@ function renderTable(pool) {
   const tb = t.querySelector("tbody");
   pool.forEach((r, i) => {
     const tr = document.createElement("tr");
+    const ctx = { pool, i };
     if (i === kfocus) tr.classList.add("kfocus");
     tr.innerHTML = `
       <td>${r.image_url ? `<img class="th" loading="lazy" src="${r.image_url}" alt="">` : ""}</td>
@@ -490,7 +542,7 @@ function renderTable(pool) {
       <td class="num">${r.psa10 ? (r.psa10_real ? "" : "~") + money(r.psa10) : ""}</td>
       <td class="num ${r.psa10_x >= 8 ? "x-hot" : "dim"}">${r.psa10_x ? r.psa10_x + "×" : ""}</td>
       <td><div class="filecell">${DECISIONS.map((d) => `<button data-file="${d.key}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div></td>`;
-    tr.addEventListener("click", () => openCard(r));
+    tr.addEventListener("click", () => openCard(r, ctx));
     wireFileButtons(tr, r);
     tb.appendChild(tr);
   });
@@ -673,55 +725,36 @@ function ledger(s) {
   return el;
 }
 
-// ── BROWSE ───────────────────────────────────────────────────────────────────
-const BUCKETS = [["pkmn", "Pokemon", "i-grid"], ["mtg", "MTG", "i-grid"], ["ygo", "Yu-Gi-Oh", "i-grid"],
-                 ["op", "One Piece", "i-grid"], ["graded", "Graded", "i-award"], ["sealed", "Sealed", "i-box"]];
-function renderBrowse() {
-  const v = $("#view-browse");
-  v.innerHTML = "";
-  if (!browseBucket) {
-    const g = document.createElement("div");
-    g.className = "cat-grid";
-    BUCKETS.forEach(([key, label, icon]) => {
-      const rs = rows.filter((r) => r.bucket === key);
-      if (!rs.length) return;
-      const val = rs.reduce((a, r) => a + r.price * (isRaw(key) ? (r.qty || 1) : 1), 0);
-      const c = document.createElement("button");
-      c.className = "cat-card";
-      c.innerHTML = `<span class="cn">${ico(icon)}${label}</span><span class="cv num">${money(val)}</span>
-        <span class="cc num">${rs.length.toLocaleString()} items</span>`;
-      c.addEventListener("click", () => nav("browse", key));
-      g.appendChild(c);
-    });
-    v.appendChild(g);
+// ── Card modal ───────────────────────────────────────────────────────────────
+// modalCtx = {pool, i}: the visible list the card was opened from. Filing a
+// card auto-advances to the next one so a binder page can be worked without
+// closing the panel; ←/→ and on-screen chevrons move manually.
+let modalCtx = null;
+function closeCard() { modalCtx = null; $("#card-modal").classList.add("hidden"); }
+function modalStep(delta) {
+  if (!modalCtx) return;
+  const next = modalCtx.i + delta;
+  if (next < 0 || next >= modalCtx.pool.length) {
+    if (delta > 0) { closeCard(); toast("End of this pile — nice work."); }
     return;
   }
-  const [, label] = BUCKETS.find(([k]) => k === browseBucket) || ["", browseBucket];
-  const rs = rows.filter((r) => r.bucket === browseBucket && passes(r)).sort(SORTS[sortKey] || SORTS.value);
-  v.innerHTML = `<div class="crumb"><button id="crumb-back">Browse</button>${ico("i-chev", "s")}<span>${label}</span>
-      <span class="hd-spacer"></span><input type="search" id="bq" placeholder="Search…" value="${esc(filters.search)}" style="max-width:220px"></div>
-    <div id="browse-body"></div>`;
-  $("#crumb-back").addEventListener("click", () => { filters.search = ""; nav("browse"); });
-  $("#bq").addEventListener("input", (e) => { filters.search = e.target.value.trim(); renderBrowse(); });
-  const body = $("#browse-body");
-  const g = document.createElement("div");
-  g.className = "grid";
-  rs.slice(0, CAP).forEach((r) => g.appendChild(tile(r, true)));
-  body.appendChild(g);
-  if (rs.length > CAP) body.insertAdjacentHTML("beforeend",
-    `<div class="trunc-note num">Showing ${CAP} of ${rs.length.toLocaleString()} — search to reach the rest.</div>`);
+  openCard(modalCtx.pool[next], { pool: modalCtx.pool, i: next });
 }
-
-// ── Card modal ───────────────────────────────────────────────────────────────
-function closeCard() { $("#card-modal").classList.add("hidden"); }
-function openCard(r) {
+function openCard(r, ctx = null) {
+  modalCtx = ctx;
   const panel = $("#modal-panel");
   const chReason = r.channel ? `Best route: ${r.channel.replace(" (", " ").replace(")", "")} — ${esc(r.channel_reason || "")}` : "";
   const psaHot = (r.psa10_x || 0) >= 8;
   const psa = r.bucket === "pkmn" && r.psa10
-    ? `<div class="m-line ${psaHot ? "hot" : ""} num">PSA 10 pays ${r.psa10_real ? "" : "~"}${money(r.psa10)} — ${r.psa10_x}× raw.${psaHot ? " Don't sell this one raw." : ""}</div>` : "";
+    ? `<div class="m-line ${psaHot ? "hot" : ""} num">PSA 10 pays ${r.psa10_real ? "" : "~"}${money(r.psa10)} — ${r.psa10_x}× raw${r.psa10_real ? "" : " (class estimate — run Refresh real prices)"}.${psaHot ? " Don't sell this one raw." : ""}</div>` : "";
   const cur = decisionOf(r);
+  const navHtml = ctx ? `<div class="m-nav">
+      <button class="ghost" id="m-prev" ${ctx.i <= 0 ? "disabled" : ""} aria-label="Previous card">‹</button>
+      <span class="num dim">${ctx.i + 1} / ${ctx.pool.length}</span>
+      <button class="ghost" id="m-next" ${ctx.i >= ctx.pool.length - 1 ? "disabled" : ""} aria-label="Next card">›</button>
+    </div>` : "";
   panel.innerHTML = `
+    ${navHtml}
     <button class="modal-close" aria-label="Close">${ico("i-x", "m")}</button>
     <div class="m-grid">
       <div class="m-art">${imgTag(r)}</div>
@@ -753,20 +786,26 @@ function openCard(r) {
       </div>
     </div>`;
   panel.querySelector(".modal-close").addEventListener("click", closeCard);
+  const ctxHere = ctx;
+  $("#m-prev")?.addEventListener("click", () => modalStep(-1));
+  $("#m-next")?.addEventListener("click", () => modalStep(1));
   if (isRaw(r.bucket)) {
     panel.querySelectorAll("#m-cond [data-c]").forEach((b) => b.addEventListener("click", async () => {
       const cond = b.dataset.c;
       const price = Math.round((r.market_price || 0) * (COND_FACTORS[cond] || 1) * 100) / 100;
       await save(r, { condition: cond, price, tags: (r.tags || []).filter((t) => t !== "not-nm") });
-      renderAll(); openCard(r);
+      renderAll(); openCard(r, ctxHere);
       toast(`Condition ${cond} — price updated to ${money2(price)}`);
     }));
     panel.querySelectorAll(".m-decide [data-file]").forEach((b) => b.addEventListener("click", async () => {
-      await fileCard(r, b.dataset.file); openCard(r);
+      await fileCard(r, b.dataset.file);
+      // Filing from the panel walks the line: straight on to the next card.
+      if (ctxHere && decisionOf(r)) { modalCtx = ctxHere; modalStep(1); }
+      else openCard(r, ctxHere);
     }));
     $("#m-oc").addEventListener("click", async () => {
       const t = offC(r) ? (r.tags || []).filter((x) => x !== "off-center") : [...(r.tags || []), "off-center"];
-      await save(r, { tags: t }); renderAll(); openCard(r);
+      await save(r, { tags: t }); renderAll(); openCard(r, ctxHere);
     });
     $("#m-ebay").addEventListener("click", async (ev) => {
       try { await navigator.clipboard.writeText(ebayListingText(r)); ev.currentTarget.innerHTML = `${ico("i-done", "s")} Copied`; toast("Copied — paste into eBay's Sell form"); }
@@ -810,7 +849,7 @@ async function uploadPhoto(r, side, file) {
   const { error } = await sb.storage.from("card-photos").upload(`${user.id}/${r.natural_key}/${side}.jpg`, file, { upsert: true, contentType: file.type || "image/jpeg" });
   if (error) { toast("Photo upload failed: " + error.message); return; }
   await save(r, { photos: Array.from(new Set([...(r.photos || []), side])) });
-  openCard(r); renderAll();
+  openCard(r, modalCtx); renderAll();
 }
 async function deletePhoto(r, side) {
   if (DEMO) return;
@@ -818,7 +857,7 @@ async function deletePhoto(r, side) {
   if (!user) return;
   await sb.storage.from("card-photos").remove([`${user.id}/${r.natural_key}/${side}.jpg`]);
   await save(r, { photos: (r.photos || []).filter((s) => s !== side) });
-  openCard(r); renderAll();
+  openCard(r, modalCtx); renderAll();
 }
 
 async function trendHtml(r) {
@@ -1057,8 +1096,14 @@ const FILE_KEYS = { "1": "sell", "2": "keep", "3": "grade", "4": "shop", "5": "c
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeCard(); return; }
   if (e.key === "u" && $("#toast-undo")) { $("#toast-undo").click(); return; }
-  if (window.innerWidth < 960 || station !== "decide") return;
   if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+  if (!$("#card-modal").classList.contains("hidden")) {   // modal layer owns the keys
+    if (e.key === "ArrowRight") modalStep(1);
+    else if (e.key === "ArrowLeft") modalStep(-1);
+    else if (FILE_KEYS[e.key]) document.querySelector(`.m-decide [data-file="${FILE_KEYS[e.key]}"]`)?.click();
+    return;
+  }
+  if (window.innerWidth < 960 || station !== "decide") return;
   const trows = document.querySelectorAll("table.positions tbody tr");
   if (!trows.length) return;
   if (e.key === "j" || e.key === "k") {
@@ -1114,8 +1159,13 @@ window.addEventListener("resize", () => {
   const last = localStorage.getItem("lastRoute");
   if (!location.hash && last) history.replaceState(null, "", last);
   const h = location.hash.replace(/^#\//, "").split("/");
-  station = ["decide", "prep", "cashout", "browse"].includes(h[0]) ? h[0] : "decide";
-  browseBucket = station === "browse" ? (h[1] || null) : null;
+  if (h[0] === "browse") {   // legacy v5 bookmarks
+    station = "decide";
+    pileKey = ["graded", "sealed"].includes(h[1]) ? h[1] : "all";
+  } else {
+    station = ["decide", "prep", "cashout"].includes(h[0]) ? h[0] : "decide";
+    if (station === "decide" && h[1]) pileKey = PILES.some(([k]) => k === h[1]) ? h[1] : "undecided";
+  }
   if (DEMO) { showApp(); return; }
   // React only when signed-in/out actually flips — INITIAL_SESSION, SIGNED_IN
   // on tab focus, and TOKEN_REFRESHED all re-fire with the same presence.

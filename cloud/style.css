@@ -135,10 +135,34 @@ main.app { max-width: 1240px; margin: 0 auto; padding: 16px 32px 64px; }
 .gchip .v { font-size: 12px; font-weight: 500; color: var(--text-2); }
 .gchip .c { font-size: 11px; color: var(--text-3); }
 .gchip.active { border-color: var(--accent); background: var(--selected-bg); }
-.filter-panel { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border: 1px solid var(--border);
-  border-radius: 10px; margin-bottom: 12px; background: var(--surface); }
-.fbadge { min-width: 16px; height: 16px; border-radius: 999px; background: var(--accent); color: #fff;
-  font-size: 10px; display: inline-flex; align-items: center; justify-content: center; padding: 0 4px; }
+/* Pile selector — where in the line am I looking? */
+.pile-row { border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.pchip { border-radius: 8px; height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid transparent; background: transparent; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.pchip .c { font-size: 11px; color: var(--text-3); }
+.pchip:hover { color: var(--text); border-color: var(--border-strong); }
+.pchip.active { border-color: var(--accent); background: var(--selected-bg); color: var(--text); }
+.pchip.active .c { color: var(--text-2); }
+
+/* Always-visible multi-select facet bar */
+.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.filter-bar.rar { margin-bottom: 12px; }
+.fgroup { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-3); margin: 0 4px 0 8px; }
+.fgroup:first-child { margin-left: 0; }
+.fchip { border-radius: 999px; height: 28px; padding: 0 11px; font-size: 12px; color: var(--text-2);
+  border: 1px solid var(--border); background: transparent; display: inline-flex; align-items: center; gap: 5px; }
+.fchip:hover { border-color: var(--border-strong); color: var(--text); }
+.fchip.active { border-color: var(--accent); background: var(--selected-bg); color: var(--text); }
+.fchip .fc { font-size: 10px; color: var(--text-3); }
+.fchip.clear { border-color: transparent; color: var(--text-3); }
+.fchip.clear:hover { color: var(--danger); }
+@media (max-width: 719px) {
+  .filter-bar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; padding-bottom: 2px; }
+  .filter-bar::-webkit-scrollbar { display: none; }
+  .fchip, .fgroup { flex: none; white-space: nowrap; }
+}
 .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
 .seg button { border: none; border-radius: 0; height: 38px; padding: 0 12px; color: var(--text-2); }
 .seg button.active { background: var(--accent); color: #fff; }
@@ -244,17 +268,6 @@ td .filecell button.on { background: var(--accent); color: #fff; }
 .ledger .bar { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; margin: 12px 0 6px; }
 .ledger .bar i { display: block; height: 100%; background: rgba(61,220,132,0.4); border-right: 2px solid var(--money); }
 
-/* Browse */
-.cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
-.cat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px;
-  cursor: pointer; display: flex; flex-direction: column; gap: 2px; text-align: left; }
-.cat-card:hover { border-color: var(--accent); }
-.cat-card .cn { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-.cat-card .cv { font-size: 20px; font-weight: 700; }
-.cat-card .cc { font-size: 12px; color: var(--text-3); }
-.crumb { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--text-2); }
-.crumb button { border: none; color: var(--accent); padding: 0; }
-
 /* Banner */
 .banner { display: flex; align-items: center; gap: 12px; background: var(--surface-raised); border: 1px solid var(--border-strong);
   border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
@@ -288,6 +301,8 @@ td .filecell button.on { background: var(--accent); color: #fff; }
   border-radius: 14px; width: 720px; max-width: 94%; max-height: 90vh; overflow: auto; padding: 24px;
   box-shadow: 0 24px 64px rgba(0,0,0,0.5); }
 .modal-close { position: absolute; top: 10px; right: 10px; width: 40px; height: 40px; border: none; color: var(--text-2); }
+.m-nav { position: absolute; top: 12px; right: 56px; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.m-nav button { width: 34px; height: 34px; padding: 0; font-size: 18px; line-height: 1; }
 .m-grid { display: grid; grid-template-columns: 240px 1fr; gap: 20px; }
 .m-art img { width: 100%; border-radius: 10px; }
 .m-art .noimg { aspect-ratio: 3/4; background: #000; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
