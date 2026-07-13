@@ -38,6 +38,7 @@ let undoState = null;
 let toastTimer = null;
 
 const money = (n) => "$" + Math.round(n).toLocaleString();
+const plural = (n, s) => n + " " + s + (n === 1 ? "" : "s");
 const money2 = (n) => "$" + (+n).toFixed(2);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const ico = (name, size = "") => `<svg class="ic ${size}" aria-hidden="true"><use href="#${name}"/></svg>`;
@@ -225,6 +226,10 @@ function renderAll() {
 
 // ── Shared card pieces ───────────────────────────────────────────────────────
 function metaLine(r) {
+  if (!isRaw(r.bucket)) {
+    const label = r.grade && r.grade !== "Ungraded" ? r.grade : r.bucket === "sealed" ? "Sealed — hold" : "Hold";
+    return `<div class="t-meta">${esc(label)}</div>`;
+  }
   if (r.bucket === "pkmn" && (r.psa10_x || 0) >= 4) {
     const hot = r.psa10_x >= 8;
     return `<div class="t-meta ${hot ? "hot" : ""} num">PSA 10 ${r.psa10_real ? "" : "~"}${money(r.psa10)} · ${r.psa10_x}×${hot ? " — don't sell raw" : ""}</div>`;
@@ -528,7 +533,7 @@ function renderPrep() {
   const rawSum = s.gradePile.reduce((a, r) => a + r.price * (r.qty || 1), 0);
   const gapSum = s.gradePile.reduce((a, r) => a + (r.grade_gap || 0) * (r.qty || 1), 0);
   const l2 = lane("Grade pile", s.gradePile.length, null,
-    s.gradePile.length ? `${s.gradePile.length} cards · ${money(rawSum)} raw · worth ~${money(gapSum)} more graded. Check centering before submitting.` : "Cards you file to Grade collect here.");
+    s.gradePile.length ? `${plural(s.gradePile.length, "card")} · ${money(rawSum)} raw · worth ~${money(gapSum)} more graded. Check centering before submitting.` : "Cards you file to Grade collect here.");
   const r2 = l2.querySelector(".lane-rows");
   if (!s.gradePile.length) r2.innerHTML = `<div class="lane-empty">Empty — the ${ico("i-grade", "s")} quick-action files cards here.</div>`;
   s.gradePile.slice(0, 50).forEach((r) => r2.appendChild(laneRow(r,
@@ -635,7 +640,7 @@ async function renderCashout() {
   sh.slice(0, 30).forEach((r) => r3.appendChild(laneRow(r,
     `<div class="lr-val num">${money(r.shop_trade || 0)} <span class="dim">/ ${money(r.shop_cash || 0)} cash</span></div>`)));
   l3.querySelector(".lane-actions").innerHTML =
-    `<button class="ghost" id="lcs-export" ${sh.length ? "" : "disabled"}>${ico("i-export", "s")} Download drop-off sheet${sh.length ? ` (${sh.length} cards · ${money(shTrade)})` : ""}</button>`;
+    `<button class="ghost" id="lcs-export" ${sh.length ? "" : "disabled"}>${ico("i-export", "s")} Download drop-off sheet${sh.length ? ` (${plural(sh.length, "card")} · ${money(shTrade)})` : ""}</button>`;
   l3.querySelector("#lcs-export").addEventListener("click", lcsCsv);
   v.appendChild(l3);
 
@@ -650,7 +655,7 @@ function ledger(s) {
     <div class="big num">${money(s.net)}</div>
     <div class="lline num">from ${money(s.mkt)} market · ${cents}¢ on the dollar — projected, not sold.</div>
     <div class="bar"><i style="width:${cents}%"></i></div>
-    <div class="lline num">${s.keepers.length} keepers held back (${money(s.keepersVal)}) · fees and shipping take the rest.</div>`;
+    <div class="lline num">${plural(s.keepers.length, "keeper")} held back (${money(s.keepersVal)}) · fees and shipping take the rest.</div>`;
   return el;
 }
 
@@ -1082,6 +1087,12 @@ $("#signup-btn").addEventListener("click", signUp);
 $("#auth-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(); });
 $("#modal-backdrop").addEventListener("click", closeCard);
 window.addEventListener("hashchange", applyHash);
+// Re-render when the window crosses the table-mode breakpoint (CSS handles the rest).
+let wasDesktop = window.innerWidth >= 960;
+window.addEventListener("resize", () => {
+  const isDesktop = window.innerWidth >= 960;
+  if (isDesktop !== wasDesktop) { wasDesktop = isDesktop; renderAll(); }
+});
 
 (async () => {
   const last = localStorage.getItem("lastRoute");

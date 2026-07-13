@@ -12,6 +12,10 @@ const mk = (o) => ({
 });
 const fin = (r) => {
   r.market_price = r.market_price || r.price;
+  if (!["pkmn", "mtg", "ygo"].includes(r.bucket)) {   // holds: no routing, no nets
+    r.net_unit = 0; r.net_pct = 0; r.shop_trade = 0; r.shop_cash = 0;
+    return r;
+  }
   r.shop_trade = Math.round(r.price * (r.price > 10 ? 0.8 : 0.7) * 100) / 100;
   r.shop_cash = Math.round(r.price * (r.price > 10 ? 0.7 : 0.6) * 100) / 100;
   if (!r.net_unit) r.net_unit = Math.round(r.price * 0.86 * 100) / 100;
