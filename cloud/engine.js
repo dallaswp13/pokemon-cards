@@ -337,6 +337,56 @@ export function normNumTCGP(num) {
   return ((num || "").trim().split("/")[0]).replace(/^0+(?=\d)/, "");
 }
 
+// Japanese Pokémon art: TCGdex assets primary (CORS *, immutable cache),
+// Limitless CDN for the sets TCGdex lacks. Collectr's English JP-set names
+// map to codes via this verified table; sets not listed keep English behavior.
+// lim: true = TCGdex has no images for that set, go straight to Limitless.
+const JP_SET_CODES = {
+  "terastal festival ex": { c: "SV8a" },
+  "vstar universe": { c: "S12a" },
+  "shiny treasure ex": { c: "SV4a" },
+  "vmax climax": { c: "S8b", lim: true },
+  "wild force": { c: "SV5K" },
+  "cyber judge": { c: "SV5M", lim: true },
+  "raging surf": { c: "SV3a" },
+  "clay burst": { c: "SV2D" },
+  "paradise dragona": { c: "SV7a" },
+  "super electric breaker": { c: "SV8" },
+  "mega brave": { c: "M1L", lim: true },
+  "mega symphonia": { c: "M1S", lim: true },
+  "mega dream ex": { c: "M2a", lim: true },
+  "pokemon card 151": { c: "SV2a" },
+  "crimson haze": { c: "SV5a" },
+  "battle partners": { c: "SV9" },
+  "heat wave arena": { c: "SV9a" },
+  "gx ultra shiny": { c: "SM8b" },
+};
+const jpEntry = (setName) => JP_SET_CODES[(setName || "").trim().toLowerCase()];
+const jpLimitlessUrl = (code, num) =>
+  `https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/tpc/${code}/${code}_${num.replace(/^0+(?=\d)/, "")}_R_JP.png`;
+
+export function jpImageUrl(setName, number) {
+  const e = jpEntry(setName);
+  const num = (number || "").split("/")[0].trim();
+  if (!e || !/^\d+$/.test(num)) return null;
+  if (e.lim) return jpLimitlessUrl(e.c, num);
+  const serie = e.c.match(/^[A-Za-z]+/)[0];
+  return `https://assets.tcgdex.net/ja/${serie}/${e.c}/${num.padStart(3, "0")}/high.webp`;
+}
+// onerror fallback for TCGdex-primary sets (per-card gaps exist).
+export function jpFallbackUrl(setName, number) {
+  const e = jpEntry(setName);
+  const num = (number || "").split("/")[0].trim();
+  if (!e || e.lim || !/^\d+$/.test(num)) return null;
+  return jpLimitlessUrl(e.c, num);
+}
+
+// Sealed-product art: TCGplayer's public CDN by productId; the productId is
+// resolved from an exact name match against the tcgp_products lookup table
+// (loaded from tcgcsv.com server-side — no CORS on their end).
+export const sealedImageUrl = (productId) =>
+  `https://product-images.tcgplayer.com/fit-in/400x400/${productId}.jpg`;
+
 // One Piece art: Limitless CDN is directly addressable from the card number
 // alone (OP01-001 → /one-piece/OP01/OP01-001_EN.webp) — no API, no auth.
 export function onePieceImageUrl(number) {
@@ -412,7 +462,7 @@ export async function buildRows(csvText, existingByKey, onProgress) {
     if (bucket === "graded" || bucket === "sealed") {
       // Graded cards use the same art as the ungraded card.
       const gimg = (bucket === "graded" && category === "Pokemon")
-        ? await pokemonImageUrl(setName, number)
+        ? (jpImageUrl(setName, number) || await pokemonImageUrl(setName, number))
         : (bucket === "graded" && category === "Magic: The Gathering") ? await mtgImageUrl(name, setName, number)
         : (bucket === "graded" && category === "One Piece") ? onePieceImageUrl(number) : null;
       out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance, rarity,
@@ -426,7 +476,7 @@ export async function buildRows(csvText, existingByKey, onProgress) {
 
     const route = routeRow(category, setName, rarity, name, variance, number, effective);
     let img = null;
-    if (category === "Pokemon") img = await pokemonImageUrl(setName, number);
+    if (category === "Pokemon") img = jpImageUrl(setName, number) || await pokemonImageUrl(setName, number);
     else if (category === "Magic: The Gathering") img = await mtgImageUrl(name, setName, number);
     else if (category === "One Piece") img = onePieceImageUrl(number);
     out.push({ natural_key: nkey, bucket, name, set_name: setName, number, variance, rarity,

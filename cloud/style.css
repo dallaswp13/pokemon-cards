@@ -202,7 +202,13 @@ main.app { max-width: 1240px; margin: 0 auto; padding: 16px 32px 64px; }
   display: flex; align-items: center; justify-content: center; color: var(--text-2); }
 .decide-row button + button { border-left: 1px solid var(--border); }
 .decide-row button:hover { color: var(--text); background: rgba(255,255,255,0.03); }
-.decide-row button.on { background: var(--accent); color: #fff; }
+.decide-row button.on { background: color-mix(in srgb, var(--dc, var(--accent)) 22%, transparent); color: var(--dc, var(--accent)); }
+/* Each decision carries its own color; the icon lights up in it when active. */
+.d-sell  { --dc: var(--money); }
+.d-keep  { --dc: var(--amber); }
+.d-grade { --dc: #56CCF2; }
+.d-shop  { --dc: #FF9F43; }
+.d-check { --dc: #A78BFA; }
 .pile-chip { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid var(--border-strong);
   border-radius: 4px; padding: 1px 6px; color: var(--text-2); }
 
@@ -234,6 +240,8 @@ table.positions.fixedcols td { overflow: hidden; text-overflow: ellipsis; }
   box-shadow: 0 8px 24px rgba(0,0,0,0.5); font-size: 13px; }
 #batch-bar button { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; font-size: 12px; }
 #batch-bar button:hover { border-color: var(--accent); }
+#batch-bar [data-batch] .ic { color: var(--dc, var(--accent)); }
+#batch-bar [data-batch]:hover { border-color: var(--dc, var(--accent)); }
 @media (max-width: 719px) {
   #batch-bar { bottom: 76px; max-width: 96%; flex-wrap: wrap; justify-content: center; }
   #batch-bar button span { display: none; }
@@ -258,7 +266,7 @@ td .filecell { display: flex; gap: 4px; }
 td .filecell button { width: 26px; height: 26px; padding: 0; border-radius: 5px; border: 1px solid transparent;
   color: var(--text-3); display: inline-flex; align-items: center; justify-content: center; }
 td .filecell button:hover { color: var(--text); border-color: var(--border-strong); }
-td .filecell button.on { background: var(--accent); color: #fff; }
+td .filecell button.on { background: color-mix(in srgb, var(--dc, var(--accent)) 22%, transparent); color: var(--dc, var(--accent)); }
 
 /* Lanes (Prep + Cash Out) */
 .lane { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
@@ -336,7 +344,7 @@ td .filecell button.on { background: var(--accent); color: #fff; }
 .m-decide button { flex: 1; height: 44px; border: none; border-radius: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 1px; font-size: 10px; color: var(--text-2); }
 .m-decide button + button { border-left: 1px solid var(--border); }
-.m-decide button.on { background: var(--accent); color: #fff; }
+.m-decide button.on { background: color-mix(in srgb, var(--dc, var(--accent)) 22%, transparent); color: var(--dc, var(--accent)); }
 .m-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .cond-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
 .cond-seg button { border: none; border-radius: 0; height: 36px; padding: 0 11px; font-size: 12px; color: var(--text-2); }

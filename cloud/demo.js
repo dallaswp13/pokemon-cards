@@ -68,9 +68,10 @@ export const DEMO_ROWS = [
     channel: "eBay (fixed)", flags: ["tcgp-tracking-$50+", "scarce"], band: "o50", value_tier: "MID",
     card_class: "modern_textured", psa10: 274.23, psa10_x: 3.0, net_unit: 77.9,
     image_url: "https://images.pokemontcg.io/sv6/188.png" },
-  { rarity: "Super Rare", name: "Sylveon ex (JP)", set_name: "Terastal Festival ex", number: "217/187", price: 147.33,
+  { rarity: "Super Rare", name: "Umbreon ex (JP)", set_name: "Terastal Festival ex", number: "217/187", price: 147.33,
     channel: "eBay (fixed)", flags: ["tcgp-tracking-$50+", "japanese"], band: "o50", value_tier: "HIGH",
-    card_class: "modern_textured", psa10: 441.99, psa10_x: 3.0, net_unit: 125.31, image_url: null },
+    card_class: "modern_textured", psa10: 441.99, psa10_x: 3.0, net_unit: 125.31,
+    image_url: "https://assets.tcgdex.net/ja/SV/SV8a/217/high.webp" },
   // ── Filed piles ──
   { rarity: "Secret Rare", name: "Umbreon VMAX (Alternate Art Secret)", set_name: "Evolving Skies", number: "215/203", price: 420.0,
     keep: true, channel: "eBay (auction)", flags: ["ebay-authenticity-$250+", "scarce"], band: "o50",
@@ -130,7 +131,9 @@ export const DEMO_ROWS = [
     image_url: "https://images.pokemontcg.io/cel25c/17_A.png" },
   // ── Sealed (holds) ──
   { bucket: "sealed", name: "Destined Rivals Pokemon Center Elite Trainer Box (Exclusive)",
-    set_name: "Destined Rivals", number: "", grade: "", price: 525.23, channel: "", net_unit: 0, image_url: null },
+    set_name: "Destined Rivals", number: "", grade: "", price: 525.23, channel: "", net_unit: 0,
+    image_url: "https://product-images.tcgplayer.com/fit-in/400x400/624675.jpg" },
   { bucket: "sealed", name: "Mega Charizard X ex Ultra Premium Collection",
-    set_name: "Miscellaneous", number: "", grade: "", price: 225.66, channel: "", net_unit: 0, image_url: null },
+    set_name: "Miscellaneous", number: "", grade: "", price: 225.66, channel: "", net_unit: 0,
+    image_url: "https://product-images.tcgplayer.com/fit-in/400x400/654213.jpg" },
 ].map(mk).map(fin);
