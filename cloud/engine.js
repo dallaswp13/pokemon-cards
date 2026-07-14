@@ -124,45 +124,31 @@ function gradeTierFor(psa10Value) {
   return eligible.length ? eligible[0] : GRADING.TIERS[GRADING.TIERS.length - 1];
 }
 
-// Grading decision. Uses the REAL PSA-10 comp when one is known (realPsa10);
-// otherwise falls back to the class-multiple estimate. Returns an EV gap for
-// the grade_gap column plus everything the panel needs to show its work.
+// Grading candidacy — REAL PSA-10 comp only (no estimates). Flags a card when a
+// PSA-10 sale nets meaningfully more than selling raw. If we have no real comp
+// yet, there's no grade signal (run a price refresh first).
 function gradeDecision(price, cls, realPsa10 = 0) {
   const f = GRADING.SELL_FEE, rawNet = price * (1 - f);
-  const p = GRADING.CLASS[cls];
-  if (price < GRADING.MIN_RAW || !p) return { grade: false, gap: 0, reason: "" };
-  const psa10Value = realPsa10 > 0 ? realPsa10 : price * p.m10;   // real comp beats the class prior
-  const pBelow = Math.max(0, 1 - p.p10 - p.p9);
-  // Blended graded value: P(10)·PSA10 + P(9)·(PSA10 scaled by 9/10 multiple ratio) + P(<9)·raw.
-  const psa9Value = psa10Value * (p.m9 / p.m10);
-  const blended = p.p10 * psa10Value + p.p9 * psa9Value + pBelow * price;
-  const t = gradeTierFor(psa10Value);
-  const ev = blended * (1 - f) - (t.fee + GRADING.SHIP) - price * (GRADING.DEBT_APR / 12) * t.months;
-  const gap = ev - rawNet;
-  const grade = psa10Value > price && gap > 0;
-  return { grade, gap: Math.round(gap * 100) / 100,
-           reason: grade ? `${cls}: EV $${Math.round(ev)} vs raw $${Math.round(rawNet)} (+$${Math.round(gap)}) via ${t.name}${realPsa10 > 0 ? " (real PSA-10 comp)" : " (est PSA-10)"} — verify centering first` : "" };
+  if (price < GRADING.MIN_RAW || !GRADING.CLASS[cls] || !(realPsa10 > 0)) return { grade: false, gap: 0, reason: "" };
+  const t = gradeTierFor(realPsa10);
+  const psa10Net = realPsa10 * (1 - f) - (t.fee + GRADING.SHIP);
+  const gap = psa10Net - rawNet;
+  return { grade: gap > 0, gap: Math.round(gap * 100) / 100, reason: "" };
 }
 
-// Full grading breakdown for the card panel — honest about what's known vs
-// assumed. rawNet is what the card nets sold raw (its routed channel).
-export function gradingBreakdown(cls, rawNet, psa10, psa10Real) {
-  const p = GRADING.CLASS[cls];
-  if (!p || !(psa10 > 0)) return null;
+// Full grading breakdown for the card panel — real comps only. Shows the plain
+// profit/loss if the card grades a 10 vs a 9 (no probability summary).
+export function gradingBreakdown(rawNet, psa9, psa10) {
+  if (!(psa10 > 0) && !(psa9 > 0)) return null;
   const f = GRADING.SELL_FEE;
-  const psa10Net = psa10 * (1 - f);              // graded sale nets ~85% after eBay fees/ship
-  const tier = gradeTierFor(psa10);
-  const gradeCost = tier.fee + GRADING.SHIP;
-  const ifTenProfit = psa10Net - rawNet - gradeCost;
-  // Break-even gem rate: the fraction of the time it must grade 10 (ignoring 9s,
-  // conservative) for grading to beat selling raw.
-  const upside = psa10Net - rawNet;
-  const breakEvenPct = upside > 0 ? Math.min(100, Math.round((gradeCost / upside) * 100)) : null;
-  const gemRatePct = Math.round(p.p10 * 100);
+  const tier = gradeTierFor(psa10 || psa9 || 0);
+  const gradeCost = Math.round(tier.fee + GRADING.SHIP);
+  const net = (v) => (v > 0 ? Math.round(v * (1 - f)) : null);
+  const pl = (v) => (v > 0 ? Math.round(v * (1 - f) - rawNet - gradeCost) : null);
   return {
-    psa10Net: Math.round(psa10Net), gradeCost: Math.round(gradeCost), tier: tier.name,
-    ifTenProfit: Math.round(ifTenProfit), gemRatePct, breakEvenPct,
-    worth: breakEvenPct != null && gemRatePct >= breakEvenPct, real: !!psa10Real,
+    gradeCost, tier: tier.name,
+    psa10Net: net(psa10), psa9Net: net(psa9),
+    ifTenProfit: pl(psa10), ifNineProfit: pl(psa9),
   };
 }
 
@@ -188,16 +174,15 @@ export function routeRow(category, setName, rarity, name, variance, number, pric
   const netUnit = channel === "LCS" ? st : channel.startsWith("eBay") ? e : t;
   const cls = cardClass(setName, rarity, name);
   const isPk = category === "Pokemon";
-  const m10 = isPk ? (GRADING.CLASS[cls] || {}).m10 || 0 : 0;
   const gd = isPk ? gradeDecision(price, cls, realPsa10) : { grade: false, gap: 0, reason: "" };
-  // Keep a real PSA-10 comp if one was passed; else fall back to the estimate.
-  const psa10 = realPsa10 > 0 ? realPsa10 : Math.round(price * m10 * 100) / 100;
+  // PSA-10 is ONLY ever a real sold comp (0 until a price refresh supplies one).
+  const psa10 = realPsa10 > 0 ? realPsa10 : 0;
   return {
     channel, channel_reason: reason, flags,
     net_unit: Math.round(netUnit * 100) / 100,
     net_pct: price ? Math.round((netUnit / price) * 1000) / 1000 : 0,
     shop_trade: Math.round(st * 100) / 100, shop_cash: Math.round(sc * 100) / 100,
-    psa10, psa10_x: price ? Math.round((psa10 / price) * 10) / 10 : 0,
+    psa10, psa10_x: psa10 && price ? Math.round((psa10 / price) * 10) / 10 : 0,
     grade_flag: gd.grade, grade_gap: gd.gap, grade_reason: gd.reason,
     value_tier: valueTier(price), band: priceBand(price), card_class: cls,
   };

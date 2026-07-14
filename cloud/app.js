@@ -20,29 +20,33 @@ const catOf = (b) => ({ pkmn: "Pokemon", mtg: "Magic: The Gathering", ygo: "YuGi
 // channel, grading EV) whenever the market price or condition changes — the
 // net figure must always track the price it's shown next to. Preserves real
 // PSA-10 data and the language/art flags routeRow doesn't know about.
-function derivePricePatch(r, { market = r.market_price, condition = r.condition } = {}) {
+function derivePricePatch(r, { market = r.market_price, condition = r.condition, realPsa10 } = {}) {
   const mkt = +market || 0;
   const price = Math.round(mkt * (COND_FACTORS[condition] || 1) * 100) / 100;
-  // Feed the real PSA-10 comp into routing so grade EV/gap use it, not a prior.
-  const realPsa10 = r.psa10_real ? (+r.psa10 || 0) : 0;
-  const route = routeRow(catOf(r.bucket), r.set_name, r.rarity || "", r.name, r.variance, r.number, price, realPsa10);
+  // Feed the real PSA-10 comp into routing so grade candidacy uses it, not a prior.
+  const rp = realPsa10 != null ? (+realPsa10 || 0) : (r.psa10_real ? (+r.psa10 || 0) : 0);
+  const route = routeRow(catOf(r.bucket), r.set_name, r.rarity || "", r.name, r.variance, r.number, price, rp);
   const keepFlags = (r.flags || []).filter((f) => f === "japanese" || f === "art-card");
   return { condition, market_price: mkt, price, ...route, flags: [...route.flags, ...keepFlags] };
 }
 const GAMES = [["pkmn", "Pokemon"], ["mtg", "MTG"], ["ygo", "Yu-Gi-Oh"], ["op", "One Piece"]];
+// The primary decision is exclusive: Sell or Keep (or undecided). The channel
+// (eBay / TCGplayer / shop) is chosen later in Prep, not at sort time.
 const DECISIONS = [
-  { key: "sell",  icon: "i-sell",  label: "Sell",  aria: "Sell as-is" },
-  { key: "keep",  icon: "i-keep",  label: "Keep",  aria: "Keep — personal collection" },
-  { key: "grade", icon: "i-grade", label: "Grade", aria: "Grade first" },
-  { key: "shop",  icon: "i-shop",  label: "Shop",  aria: "Shop drop-off" },
-  { key: "check", icon: "i-check", label: "Check", aria: "Check condition" },
+  { key: "sell", icon: "i-sell", label: "Sell", aria: "Sell" },
+  { key: "keep", icon: "i-keep", label: "Keep", aria: "Keep — personal collection" },
 ];
-const DKEY_TAG = { sell: "sell", grade: "to-grade", shop: "shop", check: "not-nm" };
-// Piles unify the old Decide/Browse split: one grid, one selector. "undecided"
-// is the working queue; the rest are where filed cards live (incl. Keep).
+// Prep flags are NON-exclusive: a card can be Sell (or Keep, or undecided) AND
+// still be flagged for a condition check or grading — these are prep steps.
+const FLAGS = [
+  { key: "check", icon: "i-check", label: "Check", aria: "Flag: check condition", tag: "not-nm" },
+  { key: "grade", icon: "i-grade", label: "Grade", aria: "Flag: grade first", tag: "to-grade" },
+];
+const FLAG_TAG = { check: "not-nm", grade: "to-grade" };
+const PRIMARY_TAGS = ["sell"];   // 'keep' lives on the keep boolean; 'sell' is a tag
 const PILES = [
-  ["all", "All"], ["undecided", "Undecided"], ["sell", "Sell"], ["keep", "Keep"], ["grade", "Grade"],
-  ["shop", "Shop"], ["check", "Check"], ["graded", "Graded"], ["sealed", "Sealed"], ["under1", "<$1"],
+  ["all", "All"], ["undecided", "Undecided"], ["sell", "Sell"], ["keep", "Keep"],
+  ["grade", "Grade"], ["check", "Check"], ["graded", "Graded"], ["sealed", "Sealed"], ["under1", "<$1"],
 ];
 
 let rows = [];
@@ -53,7 +57,7 @@ let viewMode = localStorage.getItem("viewMode") || "grid";
 let sortKey = "value";
 // Multi-select facets: within a facet any selected value passes (OR); facets
 // combine with AND — "illustration rares under $1" = rarity ∪ price band.
-const filters = { search: "", price: new Set(), route: new Set(), rarity: new Set(), grade: false, oc: false };
+const filters = { search: "", price: new Set(), route: new Set(), rarity: new Set(), grade: false, oc: false, photo: false };
 let kfocus = -1;
 let undoState = null;
 let toastTimer = null;
@@ -79,8 +83,11 @@ function gradeNum(r) {
   return n ? `${co} ${parseFloat(n)}` : co;
 }
 const isRaw = (b) => ["pkmn", "mtg", "ygo", "op"].includes(b);
-const decisionOf = (r) => r.keep ? "keep" : hasTag(r, "sell") ? "sell" : hasTag(r, "to-grade") ? "grade" : hasTag(r, "shop") ? "shop" : hasTag(r, "not-nm") ? "check" : null;
+// Primary decision only (exclusive). Check/grade are separate flags via hasTag.
+const decisionOf = (r) => r.keep ? "keep" : hasTag(r, "sell") ? "sell" : null;
 const decided = (r) => decisionOf(r) !== null;
+const flaggedCheck = (r) => hasTag(r, "not-nm");
+const flaggedGrade = (r) => hasTag(r, "to-grade");
 const SORTS = {
   value: (a, b) => b.price - a.price,
   valueasc: (a, b) => a.price - b.price,
@@ -99,8 +106,8 @@ function pileRows(key) {
   const raw = rows.filter((r) => isRaw(r.bucket));
   if (key === "under1") return raw.filter((r) => (r.price || 0) < 1);
   if (key === "undecided") return raw.filter((r) => !decided(r) && (r.price || 0) >= 1);
-  const map = { sell: "sell", grade: "to-grade", shop: "shop", check: "not-nm" };
   if (key === "keep") return raw.filter((r) => r.keep);
+  const map = { sell: "sell", grade: "to-grade", check: "not-nm" };   // grade/check are flags
   return raw.filter((r) => hasTag(r, map[key]));
 }
 
@@ -154,42 +161,55 @@ function toast(msg, undoFn = null, ms = undoFn ? 5000 : 3000) {
   toastTimer = setTimeout(() => t.remove(), ms);
 }
 
+// Transient operation status (import/refresh) shown in the otherwise-empty
+// #next-up slot; renderStrip clears it when the operation finishes.
 function setStatus(msg) {
-  const el = $("#nu-status");
-  if (el) el.textContent = msg;
-  else { const m = $(".nu-msg"); if (m) m.textContent = msg; }
+  const nu = $("#next-up");
+  if (nu) nu.innerHTML = msg ? `<div class="op-status num">${esc(msg)}</div>` : "";
 }
 
 // ── Filing ───────────────────────────────────────────────────────────────────
-const DLABEL = { sell: "Sell", keep: "Keep", grade: "Grade", shop: "Shop", check: "Condition check" };
-async function fileCard(r, dkey, el = null) {
-  const prev = { keep: r.keep, tags: [...(r.tags || [])] };
-  const was = decisionOf(r);
-  const clean = (r.tags || []).filter((t) => !["sell", "to-grade", "shop", "not-nm"].includes(t));
-  let patch;
-  if (was === dkey) {                       // toggle off → back to undecided
-    patch = { keep: false, tags: clean };
-  } else if (dkey === "keep") {
-    patch = { keep: true, tags: clean };
-  } else {
-    patch = { keep: false, tags: [...clean, DKEY_TAG[dkey]] };
+const DLABEL = { sell: "Sell", keep: "Keep", grade: "Grade first", check: "Condition check" };
+const isFlagKey = (k) => k === "check" || k === "grade";
+// Toggle a card's state for `key`. Primary (sell/keep) is exclusive and toggles
+// off to undecided; check/grade are independent flags that don't touch primary.
+function toggledPatch(r, key) {
+  if (isFlagKey(key)) {
+    const tag = FLAG_TAG[key], has = hasTag(r, tag);
+    return { tags: has ? (r.tags || []).filter((t) => t !== tag) : [...(r.tags || []), tag] };
   }
-  if (el) { el.classList.add("filing"); await new Promise((res) => setTimeout(res, 150)); }
+  const noPrimary = (r.tags || []).filter((t) => t !== "sell");   // preserve flags + off-center
+  if (decisionOf(r) === key) return { keep: false, tags: noPrimary };            // toggle off
+  if (key === "keep") return { keep: true, tags: noPrimary };
+  return { keep: false, tags: [...noPrimary, "sell"] };                          // sell
+}
+async function fileCard(r, key, el = null) {
+  const prev = { keep: r.keep, tags: [...(r.tags || [])] };
+  const was = decided(r);
+  const patch = toggledPatch(r, key);
+  // Only the primary decision removes a card from the Undecided queue, so only
+  // animate it leaving on a primary file.
+  if (el && !isFlagKey(key)) { el.classList.add("filing"); await new Promise((res) => setTimeout(res, 150)); }
   await save(r, patch);
-  const now = decisionOf(r);
+  const now = decided(r);
   if (!was && now) bumpTally(1);
   if (was && !now) bumpTally(-1);
   renderAll();
-  if (now) toast(`Filed to ${DLABEL[dkey]}`, async () => { await save(r, prev); if (!was) bumpTally(-1); renderAll(); });
+  const on = isFlagKey(key) ? hasTag(r, FLAG_TAG[key]) : decisionOf(r) === key;
+  const msg = isFlagKey(key) ? `${on ? "Flagged" : "Cleared"}: ${DLABEL[key]}` : (on ? `Filed to ${DLABEL[key]}` : "Back to undecided");
+  toast(msg, async () => { await save(r, prev); if (!was && now) bumpTally(-1); else if (was && !now) bumpTally(1); renderAll(); });
 }
 
 // ── Batch filing ─────────────────────────────────────────────────────────────
 // Check rows in list/table view, then file them all at once. Unlike fileCard
-// this SETS the decision (no toggle) so re-filing an already-filed card is a
-// no-op, and the whole batch is one undo.
-function decisionPatch(r, dkey) {
-  const clean = (r.tags || []).filter((t) => !["sell", "to-grade", "shop", "not-nm"].includes(t));
-  return dkey === "keep" ? { keep: true, tags: clean } : { keep: false, tags: [...clean, DKEY_TAG[dkey]] };
+// this SETS the state (no toggle) so re-applying is a no-op; whole batch = one undo.
+function decisionPatch(r, key) {
+  if (isFlagKey(key)) {   // add the flag (don't remove)
+    const tag = FLAG_TAG[key];
+    return { tags: hasTag(r, tag) ? (r.tags || []) : [...(r.tags || []), tag] };
+  }
+  const noPrimary = (r.tags || []).filter((t) => t !== "sell");
+  return key === "keep" ? { keep: true, tags: noPrimary } : { keep: false, tags: [...noPrimary, "sell"] };
 }
 async function fileBatch(dkey) {
   const targets = currentPool().filter((r) => selected.has(r.id) && isRaw(r.bucket));
@@ -221,7 +241,7 @@ function updateBatchBar() {
   const bar = document.createElement("div");
   bar.id = "batch-bar";
   bar.innerHTML = `<span class="num"><b>${n}</b> selected</span>
-    ${DECISIONS.map((d) => `<button class="d-${d.key}" data-batch="${d.key}" title="File all to ${d.label}">${ico(d.icon, "s")}<span>${d.label}</span></button>`).join("")}
+    ${[...DECISIONS, ...FLAGS].map((d) => `<button class="d-${d.key}" data-batch="${d.key}" title="${isFlagKey(d.key) ? "Flag all" : "File all"} — ${d.label}">${ico(d.icon, "s")}<span>${d.label}</span></button>`).join("")}
     <button class="ghost" id="batch-clear" aria-label="Clear selection">${ico("i-x", "s")}</button>`;
   document.body.appendChild(bar);
   bar.querySelectorAll("[data-batch]").forEach((b) => b.addEventListener("click", () => fileBatch(b.dataset.batch)));
@@ -233,80 +253,37 @@ function updateBatchBar() {
 }
 
 // ── Next-Up ladder ───────────────────────────────────────────────────────────
+// Sell channel: a manual override (set in Prep) wins, else the routed channel.
+function channelOf(r) {
+  if (hasTag(r, "ch-shop")) return "shop";
+  if (hasTag(r, "ch-tcg")) return "tcg";
+  if (hasTag(r, "ch-ebay")) return "ebay";
+  const c = r.channel || "";
+  return c === "TCGplayer" ? "tcg" : c === "LCS" ? "shop" : "ebay";
+}
+const CHANNELS = [["ebay", "eBay"], ["tcg", "TCGplayer"], ["shop", "Local shop"]];
+
 function stats() {
   const raw = rows.filter((r) => isRaw(r.bucket));
   const undecided = raw.filter((r) => !decided(r) && (r.price || 0) >= 1);   // bulk lives in the <$1 pile
   const sellRows = raw.filter((r) => hasTag(r, "sell"));
-  const checkRows = raw.filter((r) => hasTag(r, "not-nm"));
-  const photosNeeded = sellRows.filter((r) => r.channel && r.channel.startsWith("eBay") && (r.photos || []).length < 2);
-  const tcgpReady = sellRows.filter((r) => r.channel === "TCGplayer" || hasTag(r, "tcgplayer"));
-  const shopRows = raw.filter((r) => hasTag(r, "shop"));
-  const ebayReady = sellRows.filter((r) => r.channel && r.channel.startsWith("eBay"));
+  const checkRows = raw.filter((r) => flaggedCheck(r));
+  const gradePile = raw.filter((r) => flaggedGrade(r));
+  const photosNeeded = sellRows.filter((r) => channelOf(r) === "ebay" && (r.photos || []).length < 1);
   const sellable = raw.filter((r) => !r.keep);
   const mkt = sellable.reduce((a, r) => a + r.price * (r.qty || 1), 0);
   const net = sellable.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
   const keepers = raw.filter((r) => r.keep);
-  const stale = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10 && !r.psa10_real).length;
-  return { raw, undecided, sellRows, checkRows, photosNeeded, tcgpReady, shopRows, ebayReady, mkt, net,
-           keepers, keepersVal: keepers.reduce((a, r) => a + r.price * (r.qty || 1), 0),
-           gradePile: raw.filter((r) => hasTag(r, "to-grade")), stale };
+  return { raw, undecided, sellRows, checkRows, gradePile, photosNeeded, mkt, net,
+           keepers, keepersVal: keepers.reduce((a, r) => a + r.price * (r.qty || 1), 0) };
 }
 
-function ladder(s) {
-  const rungs = [];
-  if (!rows.length) rungs.push({ label: "Import your collection", go: () => $("#import-file").click() });
-  if (s.stale) rungs.push({ label: `Refresh ${s.stale} price${s.stale > 1 ? "s" : ""}`, go: updatePrices });
-  if (s.checkRows.length) rungs.push({ label: `Set ${s.checkRows.length} condition${s.checkRows.length > 1 ? "s" : ""}`, go: () => nav("prep") });
-  if (s.photosNeeded.length) rungs.push({ label: `Photograph ${s.photosNeeded.length} card${s.photosNeeded.length > 1 ? "s" : ""}`, go: () => nav("prep") });
-  if (s.tcgpReady.length) rungs.push({ label: "Export TCGplayer sheet", go: () => nav("cashout") });
-  if (s.shopRows.length) rungs.push({ label: "Download drop-off sheet", go: () => nav("cashout") });
-  if (s.ebayReady.length) rungs.push({ label: `List ${s.ebayReady.length} on eBay`, go: () => nav("cashout") });
-  if (!rungs.length) rungs.push({ label: "Line is clear", go: () => nav("decide", "all") });
-  return rungs;
-}
-
-// The strip tracks PRICE freshness, not decisions: the bar fills as cards get
-// real market/PSA-10 prices (and animates live during a refresh). Undecided
-// count lives on the pile selector below, so it isn't duplicated here.
+// Header projected-net only; the Next-Up strip is gone (refresh lives in the
+// Data menu, the undecided count lives on the pile selector).
 function renderStrip() {
   const s = stats();
-  const rungs = ladder(s);
-  const priceable = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10).length;
   $("#hd-stat").innerHTML = rows.length ? `<div class="lbl">projected net</div><div class="val num">${money(s.net)}</div>` : "";
-
-  let count, msg, pct, sub;
-  if (pricing) {
-    count = Math.max(0, pricing.total - pricing.done);
-    msg = "Refreshing live prices…";
-    pct = pricing.total ? Math.round((pricing.done / pricing.total) * 100) : 100;
-    sub = `${pricing.done.toLocaleString()} of ${pricing.total.toLocaleString()} priced`;
-  } else if (!rows.length) {
-    count = 0; msg = "No collection yet."; pct = 0; sub = "Import a Collectr export to begin.";
-  } else {
-    const priced = Math.max(0, priceable - s.stale);
-    count = s.stale;
-    msg = !priceable ? "No cards need live pricing." : s.stale ? "cards still on estimated prices." : "Every card has a live price.";
-    pct = priceable ? Math.round((priced / priceable) * 100) : 100;
-    sub = `${priced.toLocaleString()} of ${priceable.toLocaleString()} priced live`;
-  }
-
-  $("#next-up").innerHTML = `
-    <div class="nu-count num">${count}</div>
-    <div class="nu-body">
-      <div class="nu-msg" id="nu-status">${msg}</div>
-      <div class="nu-bar ${pricing ? "live" : ""}"><i style="width:${pct}%"></i></div>
-      <div class="nu-sub num">${sub}</div>
-    </div>
-    <div class="nu-right">
-      <div class="nu-actions">
-        ${rungs.slice(1, 3).map((r, i) => `<button class="nu-chip" data-rung="${i + 1}">${esc(r.label)}</button>`).join("")}
-        <button class="cta" id="nu-cta" ${pricing ? "disabled" : ""}>${esc(rungs[0].label)}</button>
-      </div>
-      <div class="nu-session num">${tally()} decided this session</div>
-    </div>`;
-  $("#nu-cta").addEventListener("click", rungs[0].go);
-  document.querySelectorAll(".nu-chip").forEach((b) =>
-    b.addEventListener("click", () => rungs[parseInt(b.dataset.rung)].go()));
+  const nu = $("#next-up"); if (nu) nu.innerHTML = "";
 }
 
 // ── Stations nav + router ────────────────────────────────────────────────────
@@ -329,8 +306,7 @@ function applyHash() {
 
 function renderStations() {
   const s = stats();
-  const readyNet = s.sellRows.concat(s.shopRows).reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
-  const prepCount = s.checkRows.length + s.gradePile.length + s.photosNeeded.length;
+  const prepCount = s.sellRows.length + s.checkRows.length + s.gradePile.length;
   const defs = [
     ["decide", "Cards", "i-grid", `${s.undecided.length}`],
     ["prep", "Prep", "i-camera", `${prepCount}`],
@@ -366,16 +342,19 @@ function metaLine(r) {
     const label = r.grade && r.grade !== "Ungraded" ? r.grade : r.bucket === "sealed" ? "Sealed — hold" : "Hold";
     return `<div class="t-meta">${esc(label)}</div>`;
   }
-  if (r.bucket === "pkmn" && psaEligible(r) && (r.psa10_x || 0) >= 4) {
+  // PSA only when it's a real comp; otherwise just the net.
+  if (r.bucket === "pkmn" && psaEligible(r) && r.psa10_real && (r.psa10_x || 0) >= 4) {
     const hot = r.psa10_x >= 8;
-    return `<div class="t-meta ${hot ? "hot" : ""} num">PSA 10 ${r.psa10_real ? "" : "~"}${money(r.psa10)} · ${r.psa10_x}×${hot ? " — don't sell raw" : ""}</div>`;
+    return `<div class="t-meta ${hot ? "hot" : ""} num">PSA 10 ${money(r.psa10)} · ${r.psa10_x}×${hot ? " — don't sell raw" : ""}</div>`;
   }
-  return `<div class="t-meta num">${esc((r.channel || "").replace(" (", " ").replace(")", ""))} · nets <span class="net">${money(r.net_unit || 0)}</span></div>`;
+  return `<div class="t-meta num">nets <span class="net">${money(r.net_unit || 0)}</span></div>`;
 }
+const fileActive = (r, key) => isFlagKey(key) ? hasTag(r, FLAG_TAG[key]) : decisionOf(r) === key;
+// Primary (sell/keep) then a thin divider, then the flag toggles (check/grade).
 function decideRow(r, compact = false) {
-  const cur = decisionOf(r);
-  return `<div class="decide-row" role="group" aria-label="File this card">` + DECISIONS.map((d) =>
-    `<button data-file="${d.key}" class="d-${d.key} ${cur === d.key ? "on" : ""}" title="${d.aria}" aria-label="${d.aria}">${ico(d.icon, compact ? "s" : "")}</button>`).join("") + `</div>`;
+  const btn = (d) => `<button data-file="${d.key}" class="d-${d.key} ${fileActive(r, d.key) ? "on" : ""}" title="${d.aria}" aria-label="${d.aria}">${ico(d.icon, compact ? "s" : "")}</button>`;
+  return `<div class="decide-row" role="group" aria-label="File this card">`
+    + DECISIONS.map(btn).join("") + `<span class="dr-sep"></span>` + FLAGS.map(btn).join("") + `</div>`;
 }
 function imgTag(r, cls = "") {
   if (!r.image_url) return `<div class="noimg">${r.bucket === "sealed" ? ico("i-box", "l") : ico("i-grid")}</div>`;
@@ -400,12 +379,10 @@ function tile(r, showPile = false, ctx = null) {
   const el = document.createElement("div");
   el.className = "tile";
   const cond = r.condition && r.condition !== "NM" ? `<span class="cond">${r.condition}</span>` : "";
+  // Grade / $250-auth signals live in the card panel now, not the list; JP stays
+  // because it's a quick language cue you can't get from the art.
   const fl = [];
-  const tgb = r.bucket === "pkmn" && psaEligible(r) && (r.price || 0) >= 20
-    ? gradingBreakdown(r.card_class, r.net_unit || 0, +r.psa10 || 0, r.psa10_real) : null;
-  if (tgb && tgb.worth) fl.push(`<span class="fl amber" title="Grading likely beats selling raw — open the card for the breakdown">Grade?</span>`);
   if ((r.flags || []).includes("japanese")) fl.push(`<span class="fl">JP</span>`);
-  if ((r.flags || []).some((f) => String(f).startsWith("ebay-authenticity"))) fl.push(`<span class="fl">$250+ auth</span>`);
   const pile = decisionOf(r);
   el.innerHTML = `
     <div class="tile-img">${imgTag(r)}<div class="tile-badges">${badges(r)}</div></div>
@@ -452,6 +429,7 @@ function passes(r) {
   if (filters.rarity.size && !filters.rarity.has(r.rarity || "")) return false;
   if (filters.grade && !r.grade_flag) return false;
   if (filters.oc && !offC(r)) return false;
+  if (filters.photo && !((r.photos || []).length)) return false;
   if (filters.search) {
     const q = filters.search.toLowerCase();
     if (!((r.name || "") + " " + (r.set_name || "") + " " + (r.rarity || "")).toLowerCase().includes(q)) return false;
@@ -534,11 +512,12 @@ function renderDecide() {
       <span class="fgroup"></span>
       <button class="fchip ${filters.grade ? "active" : ""}" data-facet="grade" data-fkey="">Grade candidates</button>
       <button class="fchip ${filters.oc ? "active" : ""}" data-facet="oc" data-fkey="">Off-center</button>
-      ${filters.price.size || filters.route.size || filters.rarity.size || filters.grade || filters.oc
+      <button class="fchip ${filters.photo ? "active" : ""}" data-facet="photo" data-fkey="">Has photo</button>
+      ${filters.price.size || filters.route.size || filters.rarity.size || filters.grade || filters.oc || filters.photo
         ? `<button class="fchip clear" id="f-clear">${ico("i-x", "s")} Clear</button>` : ""}
     </div>
     ${rarities.length ? `<div class="filter-bar rar">
-      <span class="fgroup">Rarity</span>${rarities.map(([k, n]) => fchip("rarity", k, esc(k), ` <span class="fc num">${n}</span>`)).join("")}
+      <span class="fgroup">Rarity</span>${rarities.map(([k]) => fchip("rarity", k, esc(k))).join("")}
     </div>` : rarityMissing ? `<div class="filter-bar rar">
       <span class="fgroup">Rarity</span><span class="dim" style="font-size:12px">Re-import your export (Data → Import) to filter by rarity.</span>
     </div>` : ""}` : ""}
@@ -574,7 +553,7 @@ function renderDecide() {
   }));
   $("#f-clear")?.addEventListener("click", () => {
     filters.price.clear(); filters.route.clear(); filters.rarity.clear();
-    filters.grade = false; filters.oc = false;
+    filters.grade = false; filters.oc = false; filters.photo = false;
     renderDecide();
   });
   $("#q").addEventListener("input", (e) => { filters.search = e.target.value.trim(); fillBody(); });
@@ -678,7 +657,7 @@ function renderTable(pool) {
       <td>${raw ? `<span class="route">${esc((r.channel || "").replace(" (", " ").replace(")", ""))}</span>` : ""}</td>
       <td class="num">${showPsa && r.psa10 ? (r.psa10_real ? "" : "~") + money(r.psa10) : ""}</td>
       <td class="num ${showPsa && r.psa10_x >= 8 ? "x-hot" : "dim"}">${showPsa && r.psa10_x ? r.psa10_x + "×" : ""}</td>
-      <td>${raw ? `<div class="filecell">${DECISIONS.map((d) => `<button data-file="${d.key}" class="d-${d.key} ${decisionOf(r) === d.key ? "on" : ""}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div>` : ""}</td>`;
+      <td>${raw ? `<div class="filecell">${[...DECISIONS, ...FLAGS].map((d) => `<button data-file="${d.key}" class="d-${d.key} ${fileActive(r, d.key) ? "on" : ""}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div>` : ""}</td>`;
     tr.addEventListener("click", () => openCard(r, ctx));
     tr.querySelector(".selbox")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -760,22 +739,34 @@ function renderPrep() {
   });
   v.appendChild(l3);
 
-  // 4) Ready summary
-  const groups = [["eBay", s.ebayReady], ["TCGplayer", s.tcgpReady], ["Shop", s.shopRows]];
-  const l4 = lane("Ready for Cash Out", groups.reduce((a, [, g]) => a + g.length, 0), null, "Filed and prepped — head to Cash Out to execute.");
+  // 4) Sell — route each card to a channel, then export the sheets
+  const sell = s.sellRows;
+  const netOf = (arr) => arr.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
+  const l4 = lane("Sell — route &amp; export", sell.length, money(netOf(sell)) + " net",
+    "Set each card's channel (auto-suggested from best net). eBay listings copy per-card from the card panel; TCGplayer and shop export as sheets below.");
   const r4 = l4.querySelector(".lane-rows");
-  groups.forEach(([label, g]) => {
-    if (!g.length) return;
-    const net = g.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
-    const d = document.createElement("div");
-    d.className = "lrow";
-    d.innerHTML = `<div class="lr-main"><div class="lr-name">${label}</div></div>
-      <div class="lr-val num" style="color:var(--money)">${money(net)} net</div>${ico("i-chev")}`;
-    d.style.cursor = "pointer";
-    d.addEventListener("click", () => nav("cashout"));
-    r4.appendChild(d);
+  if (!sell.length) r4.innerHTML = `<div class="lane-empty">Mark cards ${ico("i-sell", "s")} Sell in Cards — route them here.</div>`;
+  sell.slice(0, 80).forEach((r) => {
+    const ch = channelOf(r);
+    const seg = `<div class="cond-seg ch-seg">${CHANNELS.map(([k, l]) => `<button data-ch="${k}" class="${ch === k ? "active" : ""}">${l}</button>`).join("")}</div>`;
+    const row = laneRow(r, seg);
+    row.querySelectorAll("[data-ch]").forEach((b) => b.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const tags = (r.tags || []).filter((t) => !["ch-ebay", "ch-tcg", "ch-shop"].includes(t));
+      tags.push("ch-" + b.dataset.ch);
+      await save(r, { tags });
+      renderPrep();
+    }));
+    r4.appendChild(row);
   });
-  if (!r4.children.length) r4.innerHTML = `<div class="lane-empty">Nothing filed to Sell or Shop yet.</div>`;
+  if (sell.length > 80) r4.insertAdjacentHTML("beforeend", `<div class="trunc-note num">Showing 80 of ${sell.length}.</div>`);
+  const tcgCards = sell.filter((r) => channelOf(r) === "tcg");
+  const shopCards = sell.filter((r) => channelOf(r) === "shop");
+  l4.querySelector(".lane-actions").innerHTML =
+    `<button class="ghost" id="tcgp-export" ${tcgCards.length ? "" : "disabled"}>${ico("i-export", "s")} TCGplayer sheet (${tcgCards.length})</button>
+     <button class="ghost" id="lcs-export" ${shopCards.length ? "" : "disabled"}>${ico("i-export", "s")} Shop drop-off sheet (${shopCards.length})</button>`;
+  l4.querySelector("#tcgp-export").addEventListener("click", tcgpExport);
+  l4.querySelector("#lcs-export").addEventListener("click", lcsCsv);
   v.appendChild(l4);
 }
 
@@ -850,12 +841,6 @@ function renderTrade() {
           <button class="ghost" id="get-add-card">${ico("i-grid", "s")} Add a card</button>
         </div>
       </div>
-    </div>
-
-    <div class="trade-exports">
-      <span class="dim">Sell exports:</span>
-      <button class="ghost" id="tcgp-export">${ico("i-export", "s")} TCGplayer sheet</button>
-      <button class="ghost" id="lcs-export">${ico("i-export", "s")} Shop drop-off sheet</button>
     </div>`;
 
   const gi = $("#give-items");
@@ -897,8 +882,6 @@ function renderTrade() {
     saveTrade(); renderTrade();
   });
   $("#trade-clear")?.addEventListener("click", () => { trade = { give: [], get: [] }; saveTrade(); renderTrade(); });
-  $("#tcgp-export").addEventListener("click", tcgpExport);
-  $("#lcs-export").addEventListener("click", lcsCsv);
 }
 
 function ledger(s) {
@@ -931,21 +914,24 @@ function modalStep(delta) {
 function openCard(r, ctx = null) {
   modalCtx = ctx;
   const panel = $("#modal-panel");
-  const chReason = r.channel ? `Best route: ${r.channel.replace(" (", " ").replace(")", "")} — ${esc(r.channel_reason || "")}` : "";
-  const psaHot = (r.psa10_x || 0) >= 8;
-  const psa = r.bucket === "pkmn" && r.psa10 && psaEligible(r)
-    ? `<div class="m-line ${psaHot ? "hot" : ""} num">PSA 10 pays ${r.psa10_real ? "" : "~"}${money(r.psa10)} — ${r.psa10_x}× raw${r.psa10_real ? "" : " (class estimate — run Refresh real prices)"}.${psaHot ? " Don't sell this one raw." : ""}</div>` : "";
-  // Grading breakdown — spells out the math the "Grade?" flag alludes to,
-  // and is honest about what's a real comp vs a rough gem-rate assumption.
-  const gb = r.bucket === "pkmn" && psaEligible(r) && (r.price || 0) >= 20 ? gradingBreakdown(r.card_class, r.net_unit || 0, +r.psa10 || 0, r.psa10_real) : null;
-  const gradeHtml = gb ? `
+  const route = r.channel ? r.channel.replace(" (", " ").replace(")", "") : "";
+  const soldUrl = "https://www.ebay.com/sch/i.html?LH_Sold=1&LH_Complete=1&_nkw=" +
+    encodeURIComponent(`${r.bucket === "pkmn" ? "pokemon " : ""}${r.name} ${r.set_name} ${(r.number || "").split("/")[0]}`.replace(/\s+/g, " ").trim());
+  const srcLabel = r.psa10_real ? "PriceCharting (sold)" : "Collectr import";
+  // PSA is REAL sold data only — never an estimate.
+  const psa = r.bucket === "pkmn" && r.psa10_real && r.psa10 > 0 && psaEligible(r)
+    ? `<div class="m-line num ${(r.psa10_x || 0) >= 8 ? "hot" : ""}">PSA 10 ${money(r.psa10)} · ${r.psa10_x}× raw${(r.psa10_x || 0) >= 8 ? " — don't sell raw" : ""}</div>` : "";
+  // Grade box: real comps only (psa10_real), plain profit/loss if it 10s or 9s.
+  const gbd = r.bucket === "pkmn" && psaEligible(r) && r.psa10_real ? gradingBreakdown(r.net_unit || 0, +r.psa9 || 0, +r.psa10 || 0) : null;
+  const plRow = (label, net, pl) => net == null ? "" :
+    `<div class="gb-row"><span>${label} → nets ${money(net)}</span><b class="num ${pl >= 0 ? "pos" : "neg"}">${pl >= 0 ? "+" : ""}${money(pl)}</b></div>`;
+  const gradeHtml = gbd ? `
         <div class="m-seclbl">Should you grade it?</div>
         <div class="grade-box">
-          <div class="gb-row"><span>Sell raw now</span><b class="num">${money(r.net_unit || 0)} net</b></div>
-          <div class="gb-row"><span>If it grades PSA 10${gb.real ? "" : " (est.)"}</span><b class="num">${money(gb.psa10Net)} net</b></div>
-          <div class="gb-row"><span>Grading cost (${esc(gb.tier)} + ship)</span><b class="num">-${money(gb.gradeCost)}</b></div>
-          <div class="gb-row hl"><span>Profit if it 10s</span><b class="num ${gb.ifTenProfit > 0 ? "pos" : "neg"}">${gb.ifTenProfit >= 0 ? "+" : ""}${money(gb.ifTenProfit)}</b></div>
-          <div class="gb-note">Worth it if this card grades a 10 more than <b class="num">~${gb.breakEvenPct ?? "—"}%</b> of the time. Typical PSA-10 rate for ${esc(gradeClassLabel(r.card_class))}: <b class="num">~${gb.gemRatePct}%</b> — but centering and print lines on <em>this</em> copy decide it. ${gb.real ? "PSA-10 price is a real sold comp." : "PSA-10 price is a class estimate — run Refresh real prices for a real comp."}</div>
+          <div class="gb-row"><span>Sell raw now</span><b class="num">${money(r.net_unit || 0)}</b></div>
+          ${plRow("If PSA 10", gbd.psa10Net, gbd.ifTenProfit)}
+          ${plRow("If PSA 9", gbd.psa9Net, gbd.ifNineProfit)}
+          <div class="gb-note">Profit/loss vs selling raw, after ~${money(gbd.gradeCost)} grading (${esc(gbd.tier)}) — verify centering first.</div>
         </div>` : "";
   const cur = decisionOf(r);
   const navHtml = ctx ? `<div class="m-nav">
@@ -962,23 +948,25 @@ function openCard(r, ctx = null) {
         <h3 class="m-title">${esc(r.name)}</h3>
         <div class="m-sub">${esc(r.set_name)}${r.number ? " · #" + esc(r.number) : ""}${r.variance ? " · " + esc(r.variance) : ""}${r.grade && r.grade !== "Ungraded" ? " · " + esc(r.grade) : ""}</div>
         <div class="m-price"><span class="p num">${money2(r.price)}</span>${(r.qty || 1) > 1 ? `<span class="q num" style="border:1px solid var(--border-strong);border-radius:6px;padding:0 8px;font-size:12px;color:var(--text-2)">×${r.qty}</span>` : ""}</div>
-        ${isRaw(r.bucket) ? `<div class="m-line num dim">${esc(chReason)} · nets <span class="net">${money(r.net_unit || 0)}</span> (${Math.round((r.net_pct || 0) * 100)}%)</div>` : ""}
+        ${isRaw(r.bucket) ? `<div class="m-line num dim">Best route: ${esc(route)} · nets <span class="net">${money(r.net_unit || 0)}</span> (${Math.round((r.net_pct || 0) * 100)}%)</div>` : ""}
         ${psa}
         ${isRaw(r.bucket) ? `<div class="m-line num">Shop offer: <span class="net">${money(r.shop_trade || 0)}</span> trade / ${money(r.shop_cash || 0)} cash</div>` : ""}
-        <div id="m-trend"></div>
+        ${isRaw(r.bucket) ? `<div class="m-line num dim">Price: ${srcLabel} · <a href="${soldUrl}" target="_blank" rel="noopener" style="color:var(--accent)">recent sold ↗</a></div>` : ""}
         ${gradeHtml}
 
         ${isRaw(r.bucket) ? `
         <div class="m-seclbl">Condition</div>
         <div class="cond-seg" id="m-cond">${CONDS.map((c) => `<button data-c="${c}" class="${(r.condition || "NM") === c ? "active" : ""}">${c}</button>`).join("")}</div>
 
-        <div class="m-seclbl">File this card</div>
+        <div class="m-seclbl">Sell or keep?</div>
         <div class="m-decide">${DECISIONS.map((d) =>
-          `<button data-file="${d.key}" class="d-${d.key} ${cur === d.key ? "on" : ""}" aria-label="${d.aria}">${ico(d.icon)}<span>${d.label}</span></button>`).join("")}</div>
+          `<button data-file="${d.key}" class="d-${d.key} ${fileActive(r, d.key) ? "on" : ""}" aria-label="${d.aria}">${ico(d.icon)}<span>${d.label}</span></button>`).join("")}</div>
+        <div class="m-seclbl">Prep flags <span class="dim" style="text-transform:none;letter-spacing:0">(optional, before or after deciding)</span></div>
+        <div class="m-decide">${FLAGS.map((d) =>
+          `<button data-file="${d.key}" class="d-${d.key} ${fileActive(r, d.key) ? "on" : ""}" aria-label="${d.aria}">${ico(d.icon)}<span>${d.label}</span></button>`).join("")}</div>
         <div class="m-tools">
           <button class="ghost ${offC(r) ? "active tog-chip" : ""}" id="m-oc">${ico("i-offcenter", "s")} Off-center${offC(r) ? " ✓" : ""}</button>
           <button class="ghost" id="m-ebay">${ico("i-copy", "s")} Copy eBay listing</button>
-          <button class="ghost" id="m-ebay-open">Open eBay ${ico("i-chev", "s")}</button>
         </div>
 
         <div class="m-seclbl">Photos for eBay</div>
@@ -1000,9 +988,10 @@ function openCard(r, ctx = null) {
       toast(`Condition ${cond} — ${money2(patch.price)}, nets ${money(patch.net_unit || 0)}`);
     }));
     panel.querySelectorAll(".m-decide [data-file]").forEach((b) => b.addEventListener("click", async () => {
-      await fileCard(r, b.dataset.file);
-      // Filing from the panel walks the line: straight on to the next card.
-      if (ctxHere && decisionOf(r)) { modalCtx = ctxHere; modalStep(1); }
+      const key = b.dataset.file;
+      await fileCard(r, key);
+      // A primary decision walks the line to the next card; a flag toggle stays.
+      if (ctxHere && !isFlagKey(key) && decided(r)) { modalCtx = ctxHere; modalStep(1); }
       else openCard(r, ctxHere);
     }));
     $("#m-oc").addEventListener("click", async () => {
@@ -1013,7 +1002,6 @@ function openCard(r, ctx = null) {
       try { await navigator.clipboard.writeText(ebayListingText(r)); ev.currentTarget.innerHTML = `${ico("i-done", "s")} Copied`; toast("Copied — paste into eBay's Sell form"); }
       catch (e) { alert(ebayListingText(r)); }
     });
-    $("#m-ebay-open").addEventListener("click", () => window.open("https://www.ebay.com/sell/create", "_blank"));
     panel.querySelectorAll("input[type=file]").forEach((inp) =>
       inp.addEventListener("change", () => { if (inp.files[0]) uploadPhoto(r, inp.dataset.side, inp.files[0]); }));
     panel.querySelectorAll("[data-delphoto]").forEach((b) =>
@@ -1029,9 +1017,6 @@ function openCard(r, ctx = null) {
         const img = panel.querySelector(`img[data-photo="${side}"]`);
         if (data?.signedUrl && img) img.src = data.signedUrl;
       }
-      const t = await trendHtml(r);
-      const td = panel.querySelector("#m-trend");
-      if (td && t) td.outerHTML = t;
     }
   })();
 }
@@ -1150,7 +1135,7 @@ function downloadCsv(lines, filename) {
 const csvq = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
 
 function lcsCsv() {
-  const picks = rows.filter((r) => hasTag(r, "shop") && !r.keep).sort((a, b) => b.price - a.price);
+  const picks = rows.filter((r) => hasTag(r, "sell") && channelOf(r) === "shop" && !r.keep).sort((a, b) => b.price - a.price);
   if (!picks.length) { toast("Shop pile is empty."); return; }
   let tv = 0, tt = 0, tc = 0;
   const lines = ["Card,Set,Number,Condition,Your Value,Trade (store credit),Cash"];
@@ -1170,9 +1155,8 @@ const TCGP_HEADER = ["TCGplayer Id", "Product Line", "Set Name", "Product Name",
 
 async function tcgpExport() {
   if (DEMO) { toast("Demo mode — sign in to export"); return; }
-  const s = stats();
-  const picks = s.tcgpReady;
-  if (!picks.length) { toast("No sell-filed cards routed to TCGplayer."); return; }
+  const picks = stats().sellRows.filter((r) => channelOf(r) === "tcg");
+  if (!picks.length) { toast("No Sell cards routed to TCGplayer (set channels in Prep)."); return; }
   setStatus(`Matching ${picks.length} cards against the catalog…`);
   const matched = [], unmatched = [];
   const queue = [...picks];
@@ -1273,10 +1257,6 @@ async function importCsv(file) {
       const ins = await sb.from("cards").insert(cards.slice(i, i + 500));
       if (ins.error) { setStatus("Import failed: " + ins.error.message); return; }
     }
-    // Snapshot prices so value-over-time has data points (raw singles ≥ $1).
-    const snap = cards.filter((c) => isRaw(c.bucket) && (c.market_price || 0) >= 1)
-      .map((c) => ({ natural_key: c.natural_key, price: c.market_price, psa10: c.psa10 || 0 }));
-    for (let i = 0; i < snap.length; i += 500) await sb.from("price_history").insert(snap.slice(i, i + 500));
     const skipV = cards.meta?.skippedValue || 0;
     toast(`Imported ${cards.length} cards${skipV >= 1 ? ` · left out ${money(skipV)} of tokens/misc (not sellable as singles)` : ""}`, null, 6000);
     load();
@@ -1313,47 +1293,50 @@ async function updatePrices() {
   if (!session) return;
   const targets = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10).sort((a, b) => b.price - a.price);
   if (!targets.length) { toast("No Pokemon cards ≥ $10 to update."); return; }
-  if (!confirm(`Fetch real market + PSA-10 prices for ${targets.length} Pokemon cards ($10+)?`)) return;
-  let done = 0, hit = 0, failed = 0, notConfigured = false;
+  if (!confirm(`Fetch real market + PSA prices for ${targets.length} Pokemon cards ($10+)?`)) return;
+  let done = 0, hit = 0, failed = 0, skipped = 0, notConfigured = false;
   const hist = [];
   const queue = [...targets];
-  pricing = { done: 0, total: targets.length };
-  renderStrip();
   const worker = async () => {
     while (queue.length && !notConfigured) {
       const r = queue.shift();
       try {
         const bare = r.name.replace(/\s*\([^)]*\)/g, "").split(" - ")[0].trim();
+        const num = (r.number || "").split("/")[0].replace(/^0+(?=\d)/, "");
+        // Include the SET — a name+number-only query fuzzy-matches the wrong
+        // card/rarity (a common "Dragonite 18" hit a pricey variant).
+        const q = `pokemon ${r.set_name} ${bare} ${num}`.replace(/\s+/g, " ").trim();
         const resp = await fetch(FN_PRICES, {
           method: "POST",
           headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": "Bearer " + session.access_token },
-          body: JSON.stringify({ q: `pokemon ${bare} ${(r.number || "").split("/")[0]}`.trim() }),
+          body: JSON.stringify({ q }),
         });
         if (resp.status === 503) { notConfigured = true; break; }
         if (resp.ok) {
           const d = await resp.json();
-          let patch = null;
-          if (d.loose) patch = derivePricePatch(r, { market: d.loose });   // reprice net/shop/route off the real market
-          if (d.psa10) {
-            patch = patch || {};
-            patch.psa10 = d.psa10; patch.psa10_real = true;
-            const base = patch.price || r.price;
-            if (base) patch.psa10_x = Math.round((d.psa10 / base) * 10) / 10;
-          }
-          if (patch) { await save(r, patch); hist.push({ natural_key: r.natural_key, price: r.price, psa10: r.psa10 || 0 }); hit++; }
-          else failed++;
+          // Sanity gate: reject a match whose loose price is wildly off the
+          // current baseline — that's almost always a wrong product/rarity.
+          const anchor = r.market_price || r.price || 0;
+          const looseOk = d.loose > 0 && (!anchor || (d.loose >= anchor * 0.2 && d.loose <= anchor * 5));
+          if (!looseOk && !(d.psa10 > 0 || d.psa9 > 0)) { skipped++; done++; continue; }
+          const patch = looseOk ? derivePricePatch(r, { market: d.loose, realPsa10: d.psa10 || 0 })
+                                : derivePricePatch(r, { realPsa10: d.psa10 || 0 });
+          patch.psa9 = d.psa9 || 0;
+          patch.psa10 = d.psa10 || 0;
+          patch.psa10_real = !!(d.psa10 > 0 || d.psa9 > 0);
+          await save(r, patch);
+          hist.push({ natural_key: r.natural_key, price: r.price, psa10: r.psa10 || 0 });
+          hit++;
         } else failed++;
       } catch (e) { failed++; }
       done++;
-      pricing.done = done;
-      if (done % 3 === 0) renderStrip();
+      if (done % 5 === 0 || done === targets.length) setStatus(`Refreshing prices… ${done}/${targets.length}`);
     }
   };
   await Promise.all([worker(), worker(), worker(), worker()]);
   for (let i = 0; i < hist.length; i += 500) await sb.from("price_history").insert(hist.slice(i, i + 500));
-  pricing = null;
   if (notConfigured) toast("Real prices need the PriceCharting key configured server-side.");
-  else toast(`Updated ${hit} cards with real prices${failed ? ` · ${failed} no clean match` : ""}`);
+  else toast(`Refreshed ${hit}${skipped ? ` · ${skipped} skipped (price mismatch)` : ""}${failed ? ` · ${failed} no match` : ""}`, null, 6000);
   renderAll();
 }
 
@@ -1370,7 +1353,7 @@ async function deleteInventory() {
 }
 
 // ── Keyboard layer (desktop, Decide table): j/k move · 1–5 file · Enter open ─
-const FILE_KEYS = { "1": "sell", "2": "keep", "3": "grade", "4": "shop", "5": "check" };
+const FILE_KEYS = { "1": "sell", "2": "keep", "3": "grade", "4": "check" };
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeCard(); return; }
   if (e.key === "u" && $("#toast-undo")) { $("#toast-undo").click(); return; }
