@@ -1053,6 +1053,26 @@ async function uploadPhoto(r, side, file) {
   await save(r, { photos: Array.from(new Set([...(r.photos || []), side])) });
   openCard(r, modalCtx); renderAll();
 }
+// Used by the bulk scanner: store a captured still as the card's front photo.
+async function uploadScanPhoto(row, blob) {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return false;
+  const { error } = await sb.storage.from("card-photos").upload(`${user.id}/${row.natural_key}/front.jpg`, blob, { upsert: true, contentType: "image/jpeg" });
+  if (error) return false;
+  await save(row, { photos: Array.from(new Set([...(row.photos || []), "front"])) });
+  return true;
+}
+async function openScanner() {
+  if (DEMO) { toast("Demo mode — sign in to scan your own cards"); return; }
+  if (!rows.length) { toast("Import your collection first, then scan."); return; }
+  try {
+    const mod = await import("./scan.js");
+    await mod.openScanner({
+      sb, ANON: SUPABASE_ANON, FN_BASE: SUPABASE_URL + "/functions/v1",
+      rows, derivePricePatch, save, uploadScanPhoto, toast, reload: load,
+    });
+  } catch (e) { toast("Scanner failed to load: " + (e.message || e)); }
+}
 async function deletePhoto(r, side) {
   if (DEMO) return;
   const { data: { user } } = await sb.auth.getUser();
@@ -1397,6 +1417,7 @@ document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap"))
 $("#import-btn").addEventListener("click", () => $("#import-file").click());
 $("#import-file").addEventListener("change", () => { const f = $("#import-file").files[0]; if (f) importCsv(f); $("#import-file").value = ""; });
 $("#catalog-btn").addEventListener("click", () => $("#catalog-file").click());
+$("#scan-btn")?.addEventListener("click", openScanner);
 $("#catalog-file").addEventListener("change", () => { const fs = [...$("#catalog-file").files]; if (fs.length) catalogUpload(fs); $("#catalog-file").value = ""; });
 $("#prices-btn").addEventListener("click", updatePrices);
 $("#delete-btn").addEventListener("click", deleteInventory);

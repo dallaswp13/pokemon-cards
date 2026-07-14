@@ -150,6 +150,44 @@ main.app { max-width: 1240px; margin: 0 auto; padding: 16px 32px 64px; }
 .grade-pill { font-size: 11px; font-weight: 700; border: 1px solid var(--amber); color: var(--amber);
   border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
 
+/* ── Bulk scanner overlay ─────────────────────────────────────────────────── */
+#scan-ov { position: fixed; inset: 0; z-index: 90; background: var(--bg); display: flex; flex-direction: column; }
+.scan-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.scan-head strong { font-size: 15px; }
+.scan-head .scan-idx { margin-left: auto; font-size: 11px; color: var(--text-3); }
+.scan-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; align-items: center; }
+.scan-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--surface); }
+.scan-panel { max-width: 460px; text-align: center; margin: 32px auto; }
+.scan-panel h3 { margin: 0 0 6px; font-size: 18px; }
+.scan-panel p { margin: 0 0 16px; }
+.scan-prog { margin-top: 16px; }
+.scan-prog .nu-bar { height: 8px; }
+.scan-prog-t { font-size: 12px; margin-top: 8px; }
+.scan-cam { position: relative; width: 100%; max-width: 520px; aspect-ratio: 3/4; background: #000; border-radius: 14px; overflow: hidden; }
+#scan-video { width: 100%; height: 100%; object-fit: cover; }
+.scan-guide { position: absolute; inset: 12% 22%; border: 2px dashed rgba(255,255,255,0.5); border-radius: 10px; pointer-events: none; }
+.scan-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: center; max-width: 520px; }
+#scan-cap { min-width: 160px; }
+.scan-controls .dim { flex-basis: 100%; text-align: center; font-size: 12px; }
+.scan-grid { width: 100%; max-width: 900px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.scap { position: relative; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.scap.ok { border-color: var(--money); } .scap.low { border-color: var(--amber); } .scap.miss { border-color: var(--danger); }
+.scap > img { width: 100%; aspect-ratio: 5/7; object-fit: cover; background: #000; }
+.scap-m { padding: 7px 8px; }
+.scap-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scap-sub { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scap-score { font-size: 12px; font-weight: 700; }
+.scap-score.ok { color: var(--money); } .scap-score.low { color: var(--amber); } .scap-score.miss { color: var(--danger); }
+.scap-x { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; padding: 0; border: none; border-radius: 6px; background: rgba(0,0,0,0.6); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
+.scap-fix { position: absolute; top: 4px; left: 4px; height: 24px; padding: 0 8px; font-size: 11px; border-radius: 6px; background: rgba(0,0,0,0.6); color: #fff; border: none; }
+.scan-fix { position: fixed; inset: 0; z-index: 95; background: rgba(0,0,0,0.66); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.scan-fix-card { width: 380px; max-width: 94%; max-height: 86vh; overflow: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px; }
+.scan-fix-card h4 { margin: 0 0 10px; }
+.scan-fix-card input { width: 100%; margin: 10px 0; }
+.fix-opt { display: flex; justify-content: space-between; gap: 10px; width: 100%; text-align: left; border: 1px solid var(--border); background: transparent; border-radius: 8px; padding: 9px 10px; margin-bottom: 6px; font-size: 13px; }
+.fix-opt:hover { border-color: var(--accent); background: var(--selected-bg); }
+@media (max-width: 719px) { .scan-body { padding: 12px; } .scan-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); } }
+
 /* ── Trade calculator ─────────────────────────────────────────────────────── */
 .trade-head h2 { margin: 0 0 2px; font-size: 20px; font-weight: 800; }
 .trade-head p { margin: 0 0 14px; font-size: 13px; }
