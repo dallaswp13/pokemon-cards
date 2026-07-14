@@ -7,7 +7,10 @@
 // ── Constants (ported from config.py / fees.py / matcher.py / channels.py) ──
 export const COND_FACTORS = { NM: 1.0, LP: 0.9, MP: 0.75, HP: 0.6, DMG: 0.5 };
 
-const SEALED_RE = /\b(booster\s+box|elite\s+trainer|booster\s+pack|booster\s+bundle|collection\s+box|display\s+box|theme\s+deck|starter\s+deck|prerelease\s+kit|gift\s+box|commander\s+deck|scene\s+box|pokemon\s+center|premium\s+collection|build\s+&\s+battle|tournament\s+pack|vault\s+box|secret\s+lair)\b/i;
+// "pokemon center" is deliberately NOT a token — it appears in raw singles like
+// "N's Zekrom (Pokemon Center Exclusive)". Genuine sealed PC products always
+// carry a product-type word (Elite Trainer Box, Collection, UPC) matched below.
+const SEALED_RE = /\b(booster\s+box|elite\s+trainer|booster\s+pack|booster\s+bundle|collection\s+box|display\s+box|theme\s+deck|starter\s+deck|prerelease\s+kit|gift\s+box|commander\s+deck|scene\s+box|premium\s+collection|ultra\s+premium\s+collection|build\s+&\s+battle|tournament\s+pack|vault\s+box|secret\s+lair)\b/i;
 const SEALED_BRACKET_RE = /\[\s*set\s+of\s+\d+\s*\]/i;
 const TOKEN_RE = /\b(token|double-?sided\s+token|emblem)\b/i;
 const MISC_SETS = new Set(["Miscellaneous Cards & Products", "Jumbo Cards"]);
@@ -115,30 +118,58 @@ export function tcgNet(p) { return p - (Math.min(FEES.TCG_COMM * p, FEES.TCG_CAP
 export function shopTrade(p) { return p * (p > SHOP.THRESHOLD ? SHOP.TRADE_OVER : SHOP.TRADE_UNDER); }
 export function shopCash(p) { return p * (p > SHOP.THRESHOLD ? SHOP.CASH_OVER : SHOP.CASH_UNDER); }
 
-function gradeDecision(price, cls) {
+// Pick the cheapest grading tier whose value cap covers the PSA-10 sale price.
+function gradeTierFor(psa10Value) {
+  const eligible = GRADING.TIERS.filter((t) => t.cap >= psa10Value);
+  return eligible.length ? eligible[0] : GRADING.TIERS[GRADING.TIERS.length - 1];
+}
+
+// Grading decision. Uses the REAL PSA-10 comp when one is known (realPsa10);
+// otherwise falls back to the class-multiple estimate. Returns an EV gap for
+// the grade_gap column plus everything the panel needs to show its work.
+function gradeDecision(price, cls, realPsa10 = 0) {
   const f = GRADING.SELL_FEE, rawNet = price * (1 - f);
   const p = GRADING.CLASS[cls];
   if (price < GRADING.MIN_RAW || !p) return { grade: false, gap: 0, reason: "" };
+  const psa10Value = realPsa10 > 0 ? realPsa10 : price * p.m10;   // real comp beats the class prior
   const pBelow = Math.max(0, 1 - p.p10 - p.p9);
-  const M = p.p10 * p.m10 + p.p9 * p.m9 + pBelow * p.m8;
-  const expected10 = price * p.m10;
-  const eligible = GRADING.TIERS.filter((t) => t.cap >= expected10);
-  const tiers = eligible.length ? eligible : [GRADING.TIERS[GRADING.TIERS.length - 1]];
-  let best = -Infinity, bestTier = "";
-  for (const t of tiers) {
-    const gnet = price * M * (1 - f) - (t.fee + GRADING.SHIP) - price * (GRADING.DEBT_APR / 12) * t.months;
-    if (gnet > best) { best = gnet; bestTier = t.name; }
-  }
-  const gap = best - rawNet;
-  const grade = M > 1 && gap > 0;
+  // Blended graded value: P(10)·PSA10 + P(9)·(PSA10 scaled by 9/10 multiple ratio) + P(<9)·raw.
+  const psa9Value = psa10Value * (p.m9 / p.m10);
+  const blended = p.p10 * psa10Value + p.p9 * psa9Value + pBelow * price;
+  const t = gradeTierFor(psa10Value);
+  const ev = blended * (1 - f) - (t.fee + GRADING.SHIP) - price * (GRADING.DEBT_APR / 12) * t.months;
+  const gap = ev - rawNet;
+  const grade = psa10Value > price && gap > 0;
   return { grade, gap: Math.round(gap * 100) / 100,
-           reason: grade ? `${cls}: graded EV $${Math.round(best)} vs raw $${Math.round(rawNet)} (+$${Math.round(gap)}) via ${bestTier} — verify centering first` : "" };
+           reason: grade ? `${cls}: EV $${Math.round(ev)} vs raw $${Math.round(rawNet)} (+$${Math.round(gap)}) via ${t.name}${realPsa10 > 0 ? " (real PSA-10 comp)" : " (est PSA-10)"} — verify centering first` : "" };
+}
+
+// Full grading breakdown for the card panel — honest about what's known vs
+// assumed. rawNet is what the card nets sold raw (its routed channel).
+export function gradingBreakdown(cls, rawNet, psa10, psa10Real) {
+  const p = GRADING.CLASS[cls];
+  if (!p || !(psa10 > 0)) return null;
+  const f = GRADING.SELL_FEE;
+  const psa10Net = psa10 * (1 - f);              // graded sale nets ~85% after eBay fees/ship
+  const tier = gradeTierFor(psa10);
+  const gradeCost = tier.fee + GRADING.SHIP;
+  const ifTenProfit = psa10Net - rawNet - gradeCost;
+  // Break-even gem rate: the fraction of the time it must grade 10 (ignoring 9s,
+  // conservative) for grading to beat selling raw.
+  const upside = psa10Net - rawNet;
+  const breakEvenPct = upside > 0 ? Math.min(100, Math.round((gradeCost / upside) * 100)) : null;
+  const gemRatePct = Math.round(p.p10 * 100);
+  return {
+    psa10Net: Math.round(psa10Net), gradeCost: Math.round(gradeCost), tier: tier.name,
+    ifTenProfit: Math.round(ifTenProfit), gemRatePct, breakEvenPct,
+    worth: breakEvenPct != null && gemRatePct >= breakEvenPct, real: !!psa10Real,
+  };
 }
 
 function valueTier(p) { return p >= 100 ? "HIGH" : p >= 10 ? "MID" : p >= 3 ? "LOW" : "BULK"; }
 function priceBand(p) { return p < 1 ? "u1" : p < 5 ? "1_5" : p < 50 ? "5_50" : "o50"; }
 
-export function routeRow(category, setName, rarity, name, variance, number, price) {
+export function routeRow(category, setName, rarity, name, variance, number, price, realPsa10 = 0) {
   const flags = [];
   if (price >= FEES.AUTH_THRESHOLD) flags.push("ebay-authenticity-$250+");
   const tracking = price > ROUTER.TCGP_TRACKING;
@@ -158,13 +189,15 @@ export function routeRow(category, setName, rarity, name, variance, number, pric
   const cls = cardClass(setName, rarity, name);
   const isPk = category === "Pokemon";
   const m10 = isPk ? (GRADING.CLASS[cls] || {}).m10 || 0 : 0;
-  const gd = isPk ? gradeDecision(price, cls) : { grade: false, gap: 0, reason: "" };
+  const gd = isPk ? gradeDecision(price, cls, realPsa10) : { grade: false, gap: 0, reason: "" };
+  // Keep a real PSA-10 comp if one was passed; else fall back to the estimate.
+  const psa10 = realPsa10 > 0 ? realPsa10 : Math.round(price * m10 * 100) / 100;
   return {
     channel, channel_reason: reason, flags,
     net_unit: Math.round(netUnit * 100) / 100,
     net_pct: price ? Math.round((netUnit / price) * 1000) / 1000 : 0,
     shop_trade: Math.round(st * 100) / 100, shop_cash: Math.round(sc * 100) / 100,
-    psa10: Math.round(price * m10 * 100) / 100, psa10_x: m10,
+    psa10, psa10_x: price ? Math.round((psa10 / price) * 10) / 10 : 0,
     grade_flag: gd.grade, grade_gap: gd.gap, grade_reason: gd.reason,
     value_tier: valueTier(price), band: priceBand(price), card_class: cls,
   };
