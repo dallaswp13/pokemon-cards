@@ -8,8 +8,8 @@
 </head>
 <body>
   <header>
-    <h1>TCGP Inventory Matcher</h1>
-    <p class="subtitle">Match a portfolio export against TCGplayer pricing sheets.</p>
+    <h1>🃏 Pokémon Sell Cockpit</h1>
+    <p class="subtitle">Liquidate your collection piece-by-piece for the highest % back · TCGplayer matcher built in.</p>
   </header>
 
   <main>
@@ -27,6 +27,11 @@
       </div>
 
       <p id="upload-status" class="status"></p>
+
+      <div class="sell-cta">
+        <button type="button" id="open-sell-btn-landing" class="primary">🛒 Open Sell Cockpit →</button>
+        <span class="dim">Liquidation console — uses the export already in <code>inputs/</code>, no upload needed.</span>
+      </div>
     </section>
 
     <!-- Match summary -->
@@ -38,6 +43,7 @@
         <button type="button" id="open-link-btn">1. Linking — needs review</button>
         <button type="button" id="open-unmatched-btn" class="secondary">Unmatched</button>
         <button type="button" id="open-sheet-btn" class="secondary">2. Reviewing — matched cards</button>
+        <button type="button" id="open-sell-btn" class="primary">🛒 Sell cockpit</button>
       </div>
     </section>
 
@@ -156,8 +162,79 @@
       <button type="button" id="export-btn">Write outputs</button>
       <pre id="export-result" class="output"></pre>
     </section>
+
+    <!-- Sell Cockpit -->
+    <section id="sell-section" class="card hidden">
+      <div class="review-header">
+        <div>
+          <h2>🛒 Sell Cockpit</h2>
+          <p id="sell-meta" class="meta">Loading…</p>
+        </div>
+        <div class="review-nav">
+          <div class="view-toggle">
+            <button type="button" id="view-grid" class="vt active" title="Grid view">▦</button>
+            <button type="button" id="view-list" class="vt" title="List view">☰</button>
+          </div>
+          <label class="filter-label">Sort
+            <select id="sell-sort">
+              <option value="value">Value</option>
+              <option value="psa10x">PSA-10 ×</option>
+              <option value="netpct">Net %</option>
+              <option value="sellnow">Sell-now priority</option>
+              <option value="gradegap">Grade upside</option>
+            </select>
+          </label>
+          <input type="search" id="sell-search" placeholder="Search name or set…" />
+          <button type="button" id="prices-btn" class="primary">💲 Update prices</button>
+          <button type="button" id="cloud-btn" class="secondary" title="Mirror to sell-cockpit.vercel.app">☁️ Sync</button>
+          <button type="button" id="import-btn" class="secondary">📤 Import CSV</button>
+          <input type="file" id="import-file" accept=".csv" hidden />
+          <button type="button" id="manifest-btn" class="secondary">🏪 Drop-off</button>
+          <button type="button" id="sell-matcher-btn" class="secondary">🔧 Matcher</button>
+        </div>
+      </div>
+
+      <div id="sell-summary" class="sell-summary"></div>
+
+      <div id="sell-tabs" class="sell-tabs"></div>
+
+      <div id="sell-filters" class="sell-filters">
+        <select id="f-channel" class="f-sel" title="Channel">
+          <option value="">All channels</option>
+          <option value="eBay (auction)">eBay auction</option>
+          <option value="eBay (fixed)">eBay fixed</option>
+          <option value="TCGplayer">TCGplayer</option>
+          <option value="LCS">LCS (shop)</option>
+        </select>
+        <select id="f-band" class="f-sel" title="Price band">
+          <option value="">All prices</option>
+          <option value="o50">$50+</option>
+          <option value="5_50">$5–50</option>
+          <option value="1_5">$1–5</option>
+          <option value="u1">&lt;$1</option>
+        </select>
+        <button class="chip" data-filter="notnm" data-value="notnm">🔍 Not NM <span id="notnm-count"></span></button>
+        <button class="chip" data-filter="grade" data-value="grade">◆ Grade</button>
+        <button class="chip" data-filter="oc" data-value="oc">◎ OC</button>
+        <button class="chip" data-filter="shop" data-value="shop">🏪</button>
+        <button class="chip" data-filter="keepers" data-value="keepers">★</button>
+        <button class="chip" data-filter="photos" data-value="photos">📷</button>
+        <input type="text" id="sell-tag-filter" class="tag-filter" placeholder="tag…" />
+      </div>
+
+      <div id="sell-grid" class="sell-grid"></div>
+      <p id="sell-empty" class="empty-state hidden">No cards match these filters.</p>
+
+      <!-- Card detail modal: photos + list/sold + keep/tags -->
+      <div id="card-modal" class="modal hidden">
+        <div class="modal-backdrop" id="modal-backdrop"></div>
+        <div class="modal-panel" id="modal-panel"></div>
+      </div>
+    </section>
+
   </main>
 
   <script src="app.js"></script>
+  <script src="sell.js"></script>
 </body>
 </html>

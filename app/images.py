@@ -9,11 +9,20 @@ Scryfall/Pokemon TCG API handle the rest.
 
 import hashlib
 import json
+import re
 import threading
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
+
+import requests
+
+try:
+    from config import POKEMONTCG_API_KEY as _POKEMONTCG_KEY
+except Exception:
+    _POKEMONTCG_KEY = ""
 
 CACHE_DIR  = Path(__file__).parent / "state" / "image_cache"
 CACHE_META = Path(__file__).parent / "state" / "image_meta.json"
@@ -59,16 +68,16 @@ def _http_get(url: str, timeout: float = 6.0) -> Optional[bytes]:
         return None
 
 
-def _http_get_json(url: str, timeout: float = 6.0) -> Optional[dict]:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-    )
+_SESSION = requests.Session()   # keep-alive + gzip → matches curl (urllib was ~2x slower)
+
+
+def _http_get_json(url: str, timeout: float = 15.0) -> Optional[dict]:
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if "pokemontcg.io" in url and _POKEMONTCG_KEY:
+        headers["X-Api-Key"] = _POKEMONTCG_KEY   # 20k/day vs keyless ~1k → far fewer 429s
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            if r.status != 200:
-                return None
-            return json.loads(r.read())
+        r = _SESSION.get(url, headers=headers, timeout=timeout)
+        return r.json() if r.status_code == 200 else None
     except Exception:
         return None
 
@@ -172,3 +181,202 @@ def get_image(
             return bytes_
 
         return None
+
+
+# ── Direct CDN URL resolution (fast path — browser loads from the CDN itself) ──
+# Instead of proxying image BYTES through Flask (slow, serialized), resolve each
+# card's direct CDN image URL once and 302-redirect the browser to it. Cached to
+# disk with negative caching so misses don't re-hit the network every render.
+
+URL_CACHE = Path(__file__).parent / "state" / "image_url_cache.json"
+_URL: dict[str, dict] = {}
+_URL_TTL = 6 * 3600          # re-attempt a miss after 6h; hits effectively permanent
+
+
+def _load_url_cache() -> None:
+    global _URL
+    if not _URL and URL_CACHE.exists():
+        try:
+            _URL = json.loads(URL_CACHE.read_text())
+        except Exception:
+            _URL = {}
+
+
+def _save_url_cache() -> None:
+    URL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    URL_CACHE.write_text(json.dumps(_URL))
+
+
+_SET_STOPWORDS = {"sv", "swsh", "sm", "xy", "ex", "the", "of", "and", "pokemon",
+                  "tcg", "promo", "promos", "trainer", "gallery", "set", "series"}
+
+
+def _setwords(s: str) -> set:
+    return {w for w in re.findall(r"\w+", s.lower()) if w not in _SET_STOPWORDS}
+
+
+def _card_img(c: dict) -> Optional[str]:
+    im = c.get("images", {})
+    return im.get("small") or im.get("large")
+
+
+_SETS_CACHE = Path(__file__).parent / "state" / "ptcg_sets.json"
+_SETS: Optional[list] = None
+
+
+def _load_ptcg_sets() -> list:
+    """All pokemontcg.io sets (id/name/printedTotal/total), fetched once, cached 7d.
+    One request total — used to CONSTRUCT image URLs instead of searching per card."""
+    global _SETS
+    if _SETS is not None:
+        return _SETS
+    if _SETS_CACHE.exists():
+        try:
+            blob = json.loads(_SETS_CACHE.read_text())
+            if time.time() - blob.get("ts", 0) < 7 * 86400 and blob.get("sets"):
+                _SETS = blob["sets"]
+                return _SETS
+        except Exception:
+            pass
+    data = _http_get_json("https://api.pokemontcg.io/v2/sets?pageSize=250"
+                          "&select=id,name,printedTotal,total,series", timeout=20)
+    _SETS = data.get("data", []) if data else []
+    if _SETS:
+        _SETS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _SETS_CACHE.write_text(json.dumps({"ts": time.time(), "sets": _SETS}))
+    return _SETS
+
+
+# Vintage/ambiguous TCGP set names → exact pokemontcg.io set id. These lack a
+# reliable denominator (e.g. Base Set Charizard is just "#4") and their names
+# collide (Base / Base Set 2), so pin them explicitly to avoid wrong images.
+_SETID_ALIASES = {
+    "base set (unlimited)": "base1", "base set": "base1", "base set (shadowless)": "base1",
+    "jungle": "base2", "fossil": "base3", "base set 2": "base4", "team rocket": "base5",
+    "legendary collection": "base6", "gym heroes": "gym1", "gym challenge": "gym2",
+    "neo genesis": "neo1", "neo discovery": "neo2", "neo revelation": "neo3", "neo destiny": "neo4",
+    "expedition": "ecard1", "aquapolis": "ecard2", "skyridge": "ecard3",
+    # Trainer / Galarian Gallery subsets (numbers like TG05 / GG44 — pinned).
+    "brilliant stars trainer gallery": "swsh9tg",
+    "astral radiance trainer gallery": "swsh10tg",
+    "lost origin trainer gallery": "swsh11tg",
+    "silver tempest trainer gallery": "swsh12tg",
+    "crown zenith: galarian gallery": "swsh12pt5gg",
+    "crown zenith galarian gallery": "swsh12pt5gg",
+}
+
+
+def _ptcg_setid(set_name: str, denom: Optional[str]) -> Optional[str]:
+    """Best pokemontcg.io set id for a TCGP set name + card-number denominator."""
+    alias = _SETID_ALIASES.get(set_name.strip().lower())
+    if alias:
+        return alias
+    sets = _load_ptcg_sets()
+    if not sets:
+        return None
+    target = _setwords(set_name)
+    cands = sets
+    if denom:
+        dm = [s for s in sets if denom in (str(s.get("printedTotal")), str(s.get("total")))]
+        if len(dm) == 1:
+            return dm[0].get("id")          # unique printed-total match → confident
+        if dm:
+            cands = dm
+    scored = sorted(((len(target & _setwords(s.get("name", ""))), s) for s in cands),
+                    key=lambda x: -x[0])
+    # Accept only a clear, unambiguous name winner (else fall back / no image).
+    if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return scored[0][1].get("id")
+    return None
+
+
+def _pokemon_image_url(name: str, set_name: str, number: str) -> Optional[str]:
+    norm_num = number.split("/")[0].lstrip("0") or "0"
+    denom = None
+    if "/" in number:
+        d = number.split("/")[1].strip().lstrip("0")
+        denom = d if d.isdigit() else None
+
+    # Fast path: construct the CDN URL from set id + number — no per-card search
+    # (the search endpoint is slow/throttled). onerror in the UI hides any 404.
+    setid = _ptcg_setid(set_name, denom)
+    if setid:
+        return f"https://images.pokemontcg.io/{setid}/{norm_num}.png"
+
+    # Fallback (rare: promos / trainer-gallery subsets the set map can't pin) —
+    # search by name+number and disambiguate by set/denominator.
+    bare = re.sub(r"\s*\([^)]*\)", "", name).split(" - ")[0].strip()
+    q = urllib.parse.quote(f'name:"{bare}" number:{norm_num}')
+    data = _http_get_json(f"https://api.pokemontcg.io/v2/cards?q={q}&pageSize=25")
+    cards = data.get("data", []) if data else []
+    if not cards:
+        return None
+    if len(cards) == 1:
+        return _card_img(cards[0])
+    target = _setwords(set_name)
+
+    def score(c):
+        cs = c.get("set", {})
+        overlap = len(target & _setwords(cs.get("name", "")))
+        denom_hit = 1 if denom and str(cs.get("printedTotal") or cs.get("total") or "") == denom else 0
+        return (denom_hit, overlap)
+
+    best = max(cards, key=score)
+    denom_hit, overlap = score(best)
+    if overlap == 0 and denom_hit == 0:
+        return None
+    return _card_img(best)
+
+
+_SCRY_LOCK = threading.Lock()
+_scry_last = [0.0]
+
+
+def _scryfall_get(url: str) -> Optional[dict]:
+    # Scryfall asks for ~10 req/s max — serialize to ~8/s so the prewarm pool
+    # doesn't get 429'd (which was leaving MTG cards imageless).
+    with _SCRY_LOCK:
+        dt = time.time() - _scry_last[0]
+        if dt < 0.12:
+            time.sleep(0.12 - dt)
+        _scry_last[0] = time.time()
+    return _http_get_json(url)
+
+
+def _scryfall_image_url(tid: str, name: str, set_name: str) -> Optional[str]:
+    data = _scryfall_get(f"https://api.scryfall.com/cards/tcgplayer/{tid}")
+    if data and data.get("image_uris", {}).get("normal"):
+        return data["image_uris"]["normal"]
+    q = urllib.parse.quote(f'!"{name}" set:"{set_name}"')
+    data = _scryfall_get(f"https://api.scryfall.com/cards/search?q={q}&unique=cards")
+    if data and data.get("data"):
+        return data["data"][0].get("image_uris", {}).get("normal")
+    return None
+
+
+def resolve_image_url(tcgplayer_id: str, category: str, name: str,
+                      set_name: str, number: str, cached_only: bool = False) -> Optional[str]:
+    """Direct CDN image URL for a card (cached, negative-cached). None if unresolved.
+    cached_only=True returns the cached value (or None) without any network call —
+    used by /api/sell so serving the grid never blocks on resolution."""
+    if not _URL:
+        _load_url_cache()
+    ent = _URL.get(tcgplayer_id)
+    if ent:
+        # Hits are cached ~permanently; misses only 15 min so a transient
+        # rate-limit/network blip re-resolves instead of hiding art for hours.
+        ttl = _URL_TTL if ent.get("url") else 900
+        if (time.time() - ent.get("ts", 0)) < ttl:
+            return ent.get("url")
+    if cached_only:
+        return None
+
+    if category == "Magic: The Gathering":
+        url = _scryfall_image_url(tcgplayer_id, name, set_name)
+    else:
+        url = _pokemon_image_url(name, set_name, number)
+
+    with _LOCK:
+        _URL[tcgplayer_id] = {"url": url, "ts": time.time()}
+        _save_url_cache()
+    return url

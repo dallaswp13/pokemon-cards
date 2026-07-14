@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Liquidatr</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Icon sprite: Lucide-style, 24×24, stroke=currentColor, no fills -->
+  <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-conveyor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="9" rx="2"/><circle cx="7" cy="19" r="1.6"/><circle cx="17" cy="19" r="1.6"/><path d="M8 10.5h8"/></symbol>
+    <symbol id="i-sell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.6 3H19a2 2 0 0 1 2 2v6.4a2 2 0 0 1-.6 1.4l-7.6 7.6a2 2 0 0 1-2.8 0l-6.4-6.4a2 2 0 0 1 0-2.8L11.2 3.6a2 2 0 0 1 1.4-.6Z"/><path d="M16.5 6.5v2M15.5 8.5h1.6a1 1 0 0 1 0 2h-1.2a1 1 0 0 0 0 2h1.6"/></symbol>
+    <symbol id="i-keep" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.6 6.1.8-4.5 4.3 1.1 6-5.4-2.9L6.6 19.7l1.1-6L3.2 9.4l6.1-.8Z"/></symbol>
+    <symbol id="i-grade" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10l4 6-9 12L3 9Z"/><path d="M3 9h18M9.5 3 8 9l4 12M14.5 3 16 9l-4 12"/></symbol>
+    <symbol id="i-shop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v9a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-9"/><path d="M3.5 6 5 3h14l1.5 3a2.4 2.4 0 0 1-4.3 1.6 2.4 2.4 0 0 1-4.2 0 2.4 2.4 0 0 1-4.2 0A2.4 2.4 0 0 1 3.5 6Z"/><path d="M9 20v-6h6v6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.4-4.4"/><path d="M10.5 7.5v3.5M10.5 13.6v.01"/></symbol>
+    <symbol id="i-offcenter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a2 2 0 0 1 2-2h1.5l1.5-2h8l1.5 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+    <symbol id="i-import" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v10m0 0 4-4m-4 4-4-4"/><path d="M4 15v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3"/></symbol>
+    <symbol id="i-export" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13V3m0 0 4 4m-4-4L8 7"/><path d="M4 15v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-trend-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/></symbol>
+    <symbol id="i-trend-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 7 6 6 4-4 8 8"/><path d="M15 17h6v-6"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6.5 7.5V19l-3-1.6v-4.9Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.4-4.4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-done" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.7 2.7L16 9.5"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 8 4.5v11L12 22l-8-4.5v-11Z"/><path d="M4 6.5 12 11l8-4.5M12 11v11"/></symbol>
+    <symbol id="i-award" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="6"/><path d="m8.5 14-1.5 7 5-3 5 3-1.5-7"/></symbol>
+    <symbol id="i-db" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5V12c0 1.7 3.6 3 8 3s8-1.3 8-3V5.5"/><path d="M4 12v6.5c0 1.7 3.6 3 8 3s8-1.3 8-3V12"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 7"/></symbol>
+    <symbol id="i-signout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  </svg>
+
+  <header class="app">
+    <span class="wordmark"><svg class="ic m" aria-hidden="true"><use href="#i-conveyor"/></svg>LIQUIDATR</span>
+    <span class="hd-spacer"></span>
+    <span class="hd-stat" id="hd-stat" title="Projected net if everything sells"></span>
+    <div class="menu-wrap">
+      <button class="icon-btn" id="data-btn" aria-label="Data menu"><svg class="ic m" aria-hidden="true"><use href="#i-db"/></svg></button>
+      <div class="menu hidden" id="data-menu">
+        <button id="import-btn"><svg class="ic" aria-hidden="true"><use href="#i-import"/></svg>Import Collectr CSV…</button>
+        <button id="prices-btn"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>Refresh real prices</button>
+        <button id="catalog-btn"><svg class="ic" aria-hidden="true"><use href="#i-db"/></svg>TCGplayer catalog…</button>
+        <div class="sep"></div>
+        <button id="delete-btn" class="danger"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>Delete inventory</button>
+        <button id="signout-btn"><svg class="ic" aria-hidden="true"><use href="#i-signout"/></svg>Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <input type="file" id="import-file" accept=".csv" hidden />
+  <input type="file" id="catalog-file" accept=".csv" multiple hidden />
+
+  <!-- Auth -->
+  <div id="auth-section" class="auth-wrap hidden">
+    <div class="auth-card">
+      <span class="wordmark"><svg class="ic m" aria-hidden="true"><use href="#i-conveyor"/></svg>LIQUIDATR</span>
+      <p class="auth-tag">Turn the binder into dollars.</p>
+      <input type="email" id="auth-email" placeholder="Email" autocomplete="username" />
+      <input type="password" id="auth-pass" placeholder="Password" autocomplete="current-password" />
+      <p class="auth-err" id="auth-status"></p>
+      <button class="cta" id="signin-btn">Sign in</button>
+      <p class="auth-alt">New here? <button id="signup-btn">Create account</button></p>
+    </div>
+  </div>
+
+  <!-- App -->
+  <main class="app hidden" id="app-main">
+    <div id="demo-note" class="demo-note hidden">Demo mode — sample collection, nothing saves. <a href="/" style="color:var(--accent)">Sign in</a> to use your own.</div>
+    <div class="next-up" id="next-up"></div>
+    <nav class="stations" id="stations"></nav>
+    <section id="view-decide"></section>
+    <section id="view-prep" class="hidden"></section>
+    <section id="view-cashout" class="hidden"></section>
+    <section id="view-browse" class="hidden"></section>
+  </main>
+
+  <!-- Card modal -->
+  <div id="card-modal" class="modal hidden">
+    <div class="modal-backdrop" id="modal-backdrop"></div>
+    <div class="modal-panel" id="modal-panel"></div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -122,9 +122,55 @@ class Radar:
 # Channel router thresholds
 # ---------------------------------------------------------------------------
 
+class Grading:
+    """Grade-vs-sell-raw EV parameters (verified July 2026 — all tunable/volatile)."""
+    DEBT_APR = 0.22               # guaranteed return from paying debt; penalizes locked cash
+    SELL_FEE = 0.15               # eBay all-in (~13.25% + shipping); no $1k promo (expired)
+    GRADE_MIN_RAW = 20.0          # never bother grading below this raw price
+    SHIP_SUPPLIES = 6.0           # prorated 2-way shipping + supplies added to each tier fee
+
+    # PSA tiers (2026, post Feb-10 increase): fee, declared-value cap, months to get back.
+    PSA_TIERS = [
+        {"name": "Value Bulk", "fee": 24.99, "cap": 500,  "months": 4.5},
+        {"name": "Value",      "fee": 32.99, "cap": 500,  "months": 3.5},
+        {"name": "Value Plus", "fee": 49.99, "cap": 500,  "months": 2.0},
+        {"name": "Value Max",  "fee": 64.99, "cap": 1000, "months": 1.5},
+        {"name": "Regular",    "fee": 79.99, "cap": 1500, "months": 1.0},
+        {"name": "Express",    "fee": 149.0, "cap": 2500, "months": 0.75},
+    ]
+    # Per card-class: expected PSA-10 / PSA-9 / below-9 multiples over raw NM, and P(grade).
+    # Modern PSA-9 ≈ raw (the trap). Vintage multiples dwarf everything.
+    CLASS_PARAMS = {
+        "vintage":         {"m10": 8.0, "m9": 1.5, "m8": 1.0, "p10": 0.20, "p9": 0.40},
+        "modern_textured": {"m10": 3.0, "m9": 1.1, "m8": 0.8, "p10": 0.22, "p9": 0.45},
+        "modern_smooth":   {"m10": 2.5, "m9": 1.1, "m8": 0.8, "p10": 0.40, "p9": 0.40},
+    }
+    # Consignment/auction house floor — nothing in the pool reaches it (info-only gate).
+    CONSIGN_FLOOR_GRADED = 2000.0
+
+
+class Shop:
+    """Local card-shop trade-in (the shop by Dallas's work). Singles >$10 →
+    80% trade / 70% cash; ≤$10 → 70% trade / 60% cash. Dallas favors TRADE
+    credit — his goal is to consolidate many small cards into fewer big ones."""
+    THRESHOLD = 10.0
+    TRADE_OVER = 0.80
+    CASH_OVER = 0.70
+    TRADE_UNDER = 0.70
+    CASH_UNDER = 0.60
+
+
+# Inventory condition → fraction of NM market price (sell-side, Dallas's rule).
+CONDITION_FACTORS = {"NM": 1.0, "LP": 0.90, "MP": 0.75, "HP": 0.60, "DMG": 0.50}
+CONDITIONS = list(CONDITION_FACTORS)
+
+
 class Router:
     BULK_CEILING_USD = 5.0        # Pokemon singles under this → bulk lots (D)
     EBAY_SCARCE_MIN_USD = 25.0    # only send scarce cards to eBay auction above this
+    # TCGplayer requires uploaded tracking on orders $50+ (cost + effort), so
+    # Dallas doesn't want to sell those there — route $50+ to eBay instead.
+    TCGP_TRACKING_THRESHOLD = 50.0
     # Warm up the eBay account before listing pricey cards: clear the new-seller
     # payout hold with cheap sales first (10+ sales totaling $150+).
     WARMUP_SALES_COUNT = 12
