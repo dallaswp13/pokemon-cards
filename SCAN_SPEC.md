@@ -94,5 +94,14 @@ The inventory is a **closed set with reference images already on every row** (`i
 - **Crop quality from real captures** — glare on holos/sleeves; even lighting matters. Grid-burst on a matte mat mitigates.
 - **Sleeved cards** — glare/softening; recommend scanning unsleeved where practical.
 
-## 12. Recommended first build
-Grid-burst capture + **Route B** (pgvector closed-set match, in-browser embeddings) — because the 1,379-card (and eventually full-collection) volume makes per-call APIs a poor fit, and closed-set matching against the user's own reference images is inherently high-confidence — with a keyboard-driven review grid and a one-tap batch commit that writes `photos.front` + the pile's `condition`. Validate the matcher with CardSight on a small batch first.
+## 12. Confirmed build (Dallas, decided)
+**Capture = flip-stream** (phone on an overhead stand; flip cards one at a time; auto-grab the sharpest full-frame still per card). **Matcher = Route B, pgvector closed-set** (embed the ~4,000 reference images once; embed each crop in-browser with the same CLIP model; nearest-neighbor against the user's own inventory). Grid-burst kept as a fallback capture mode. Recognition API (CardSight) used only to sanity-check the matcher on a small batch, not in production.
+
+### Build order (each step independently verifiable)
+1. **DB foundation — ✅ DONE & validated.** pgvector enabled; `ref_embeddings(natural_key, embedding vector(512), image_url)` (shared; reference art is user-independent); `match_card(q, k)` RPC returns the caller's top-k inventory matches by cosine similarity (RLS-scoped via `auth.uid()`). Cosine ordering verified on synthetic vectors (1.0 / 0.99 / 0.0). Authenticated write policy added so the backfill can run in-browser.
+2. **Embedding backfill — IN-BROWSER** (write path resolved). No service key / no headless login is available, so the backfill runs as a one-time in-app "Build match index" action under the signed-in user (this also guarantees the backfill and scanner use the *identical* CLIP model — `Xenova/clip-vit-base-patch32`, 512-d — so vectors are comparable). For each distinct `natural_key` with an `image_url` and no embedding: fetch the reference image, embed, upsert into `ref_embeddings`. **CORS note:** canvas pixel reads need CORS-open image hosts (Scryfall sends `ACAO:*`; pokemontcg.io/Limitless may not) — route those through a small Supabase Edge Function image proxy that re-serves bytes with CORS. Incremental after the first run.
+3. **Match module (browser)** — load CLIP via Transformers.js (WebGPU), embed a crop, call `match_card`. Prove: a real photo of a known card returns that card as top-1 with a clear score margin. **This is the go/no-go gate** — tune the auto-accept threshold on real cards before building more.
+4. **Capture (flip-stream)** — `getUserMedia` + `requestVideoFrameCallback`, Laplacian sharpness gate, opencv.js quad-detect + de-warp → one rectified still per flipped card; dedupe consecutive frames of the same card.
+5. **Review grid + commit** — crop next to top match + score; auto-accept ≥ threshold, one-tap fix the rest; batch-write `photos.front` (Storage) + session `condition` (reprices via `derivePricePatch`).
+
+MVP = a "Scan a pile" session (pick condition → flip-stream → review → commit) behind a flag.
