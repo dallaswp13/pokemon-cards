@@ -334,7 +334,7 @@ function renderStations() {
   const defs = [
     ["decide", "Cards", "i-grid", `${s.undecided.length}`],
     ["prep", "Prep", "i-camera", `${prepCount}`],
-    ["cashout", "Cash Out", "i-export", money(readyNet), true],
+    ["cashout", "Trade", "i-refresh", ""],
   ];
   $("#stations").innerHTML = defs.map(([key, label, icon, pill, isMoney]) =>
     `<button class="${key === station ? "active" : ""}" data-st="${key}">
@@ -351,7 +351,7 @@ function renderAll() {
     $(`#view-${k}`)?.classList.toggle("hidden", k !== station));
   if (station === "decide") renderDecide();
   else if (station === "prep") renderPrep();
-  else if (station === "cashout") renderCashout();
+  else if (station === "cashout") renderTrade();
   if (station !== "decide") updateBatchBar();   // removes the bar off-station
 }
 
@@ -780,80 +780,125 @@ function renderPrep() {
 }
 
 // ── CASH OUT ─────────────────────────────────────────────────────────────────
-async function renderCashout() {
-  const v = $("#view-cashout");
-  const s = stats();
-  v.innerHTML = "";
+// ── TRADE ─────────────────────────────────────────────────────────────────────
+// Two baskets: what you GIVE (your cards, inventory-autocomplete + cash) and
+// what you GET (cash offer, or manually-entered cards). The middle shows what
+// % of the market value you give you're getting back — the convention haggle
+// check. Persisted so a session survives a reload.
+let trade = (() => { try { return JSON.parse(localStorage.getItem("trade") || "") || { give: [], get: [] }; } catch { return { give: [], get: [] }; } })();
+const saveTrade = () => localStorage.setItem("trade", JSON.stringify(trade));
+const sideTotal = (side) => trade[side].reduce((a, it) => a + (it.kind === "cash" ? (+it.unit || 0) : (+it.unit || 0) * (it.qty || 1)), 0);
 
-  if (!s.sellRows.length && !s.shopRows.length) {
-    const el = document.createElement("div");
-    el.className = "empty";
-    el.innerHTML = `${ico("i-export", "l")}<h4>Nothing's ready to cash out yet.</h4>
-      <p>Decisions come first — ${s.undecided.length.toLocaleString()} are waiting.</p>
-      <button class="ghost" id="go-decide">Start deciding</button>`;
-    el.querySelector("#go-decide").addEventListener("click", () => nav("decide"));
-    v.appendChild(el);
-    v.appendChild(ledger(s));
-    return;
-  }
-
-  // eBay lane
-  const eb = s.ebayReady;
-  const ebNet = eb.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
-  const l1 = lane("eBay", eb.length, money(ebNet) + " net", "Copy each listing and paste it into eBay's Sell form. Photos attach from your phone.");
-  const r1 = l1.querySelector(".lane-rows");
-  if (!eb.length) r1.innerHTML = `<div class="lane-empty">File cards to Sell (routed to eBay) and they land here.</div>`;
-  eb.slice(0, 30).forEach((r) => {
-    const row = laneRow(r, `<div class="lr-val num net" style="color:var(--money)">${money(r.net_unit || 0)}</div>
-      <button class="ghost" data-copy>${ico("i-copy", "s")} Copy listing</button>`);
-    row.querySelector("[data-copy]").addEventListener("click", async (ev) => {
-      ev.stopPropagation();
-      try { await navigator.clipboard.writeText(ebayListingText(r)); ev.currentTarget.textContent = "Copied ✓"; toast("Copied — paste into eBay's Sell form"); }
-      catch (e) { openCard(r); }
-    });
-    r1.appendChild(row);
-  });
-  if (eb.length) l1.querySelector(".lane-actions").innerHTML =
-    `<button class="ghost" onclick="window.open('https://www.ebay.com/sell/create','_blank')">Open eBay Sell form ${ico("i-chev", "s")}</button>`;
-  v.appendChild(l1);
-
-  // TCGplayer lane
-  const tp = s.tcgpReady;
-  const tpNet = tp.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
-  const l2 = lane("TCGplayer", tp.length, money(tpNet) + " net", "Exports the Seller Portal add-quantity sheet — only the rows you're adding.");
-  const la2 = l2.querySelector(".lane-actions");
-  const r2 = l2.querySelector(".lane-rows");
-  if (!tp.length) r2.innerHTML = `<div class="lane-empty">File cards to Sell (routed to TCGplayer) and they land here.</div>`;
-  let catCount = 0;
-  if (!DEMO) {
-    const { count } = await sb.from("tcgp_catalog").select("*", { count: "exact", head: true });
-    catCount = count || 0;
-  }
-  if (catCount || DEMO) {
-    la2.innerHTML = `<button class="ghost" id="tcgp-export" ${tp.length ? "" : "disabled"}>${ico("i-export", "s")} Export upload sheet</button>
-      <span class="dim" style="font-size:12px">Catalog: <span class="num">${catCount.toLocaleString()}</span> rows · <button class="ghost" id="cat-update" style="padding:2px 6px;font-size:12px">Update…</button></span>`;
+function tradeItemRow(side, it, idx) {
+  const el = document.createElement("div");
+  el.className = "trade-item";
+  if (it.kind === "cash") {
+    el.innerHTML = `<span class="ti-cash">${ico("i-sell", "s")}</span>
+      <div class="ti-main"><div class="ti-name">Cash</div></div>
+      <div class="ti-amt">$<input type="number" class="ti-unit" value="${+it.unit || 0}" min="0" step="1" inputmode="decimal"></div>
+      <button class="ti-x" aria-label="Remove">${ico("i-x", "s")}</button>`;
   } else {
-    la2.innerHTML = `<button class="ghost" id="cat-update">Set up catalog (one-time)</button>
-      <span class="dim" style="font-size:12px">In Seller Portal, export Pricing for each game you sell and upload the CSVs here — you won't need to do this again until new sets drop.</span>`;
+    el.innerHTML = `${it.image_url ? `<img class="ti-img" src="${esc(it.image_url)}" alt="">` : `<span class="ti-cash">${ico("i-grid", "s")}</span>`}
+      <div class="ti-main"><div class="ti-name">${esc(it.name)}</div><div class="ti-sub">${esc(it.sub || "")}</div></div>
+      <div class="ti-qty"><button class="qd" aria-label="Less">–</button><span class="num">${it.qty || 1}</span><button class="qu" aria-label="More">+</button></div>
+      <div class="ti-amt">$<input type="number" class="ti-unit" value="${+it.unit || 0}" min="0" step="0.01" inputmode="decimal"></div>
+      <button class="ti-x" aria-label="Remove">${ico("i-x", "s")}</button>`;
+    el.querySelector(".qd").addEventListener("click", () => { it.qty = Math.max(1, (it.qty || 1) - 1); saveTrade(); renderTrade(); });
+    el.querySelector(".qu").addEventListener("click", () => { it.qty = (it.qty || 1) + 1; saveTrade(); renderTrade(); });
   }
-  la2.querySelector("#tcgp-export")?.addEventListener("click", tcgpExport);
-  la2.querySelector("#cat-update")?.addEventListener("click", () => $("#catalog-file").click());
-  v.appendChild(l2);
+  el.querySelector(".ti-unit").addEventListener("change", (e) => { it.unit = Math.max(0, +e.target.value || 0); saveTrade(); renderTrade(); });
+  el.querySelector(".ti-x").addEventListener("click", () => { trade[side].splice(idx, 1); saveTrade(); renderTrade(); });
+  return el;
+}
 
-  // Shop lane
-  const sh = s.shopRows;
-  const shTrade = sh.reduce((a, r) => a + (r.shop_trade || 0) * (r.qty || 1), 0);
-  const l3 = lane("Local card shop", sh.length, money(shTrade) + " trade", "Download the sheet, hand it to the shop, and you've got a starting number for the haggle.");
-  const r3 = l3.querySelector(".lane-rows");
-  if (!sh.length) r3.innerHTML = `<div class="lane-empty">The ${ico("i-shop", "s")} quick-action builds your drop-off pile.</div>`;
-  sh.slice(0, 30).forEach((r) => r3.appendChild(laneRow(r,
-    `<div class="lr-val num">${money(r.shop_trade || 0)} <span class="dim">/ ${money(r.shop_cash || 0)} cash</span></div>`)));
-  l3.querySelector(".lane-actions").innerHTML =
-    `<button class="ghost" id="lcs-export" ${sh.length ? "" : "disabled"}>${ico("i-export", "s")} Download drop-off sheet${sh.length ? ` (${plural(sh.length, "card")} · ${money(shTrade)})` : ""}</button>`;
-  l3.querySelector("#lcs-export").addEventListener("click", lcsCsv);
-  v.appendChild(l3);
+function renderTrade() {
+  const v = $("#view-cashout");
+  const give = sideTotal("give"), get = sideTotal("get");
+  const pct = give > 0 ? Math.round((get / give) * 100) : 0;
+  const pctCls = !give || !get ? "dim" : pct >= 100 ? "pos" : pct >= 80 ? "amber" : "neg";
+  const delta = get - give;
 
-  v.appendChild(ledger(s));
+  v.innerHTML = `
+    <div class="trade-head">
+      <h2>Trade calculator</h2>
+      <p class="dim">Load your cards on the left and the cash/cards you'd get on the right — the middle tells you what % of market value you're being offered. ${trade.give.length || trade.get.length ? `<button class="linkbtn" id="trade-clear">Clear</button>` : ""}</p>
+    </div>
+    <div class="trade-cols">
+      <div class="trade-col" id="col-give">
+        <div class="tc-head"><h3>You give</h3><span class="tc-total num">${money2(give)}</span></div>
+        <div class="tc-search">
+          <input type="search" id="give-search" placeholder="Search your inventory…" autocomplete="off">
+          <div class="tc-drop hidden" id="give-drop"></div>
+        </div>
+        <div class="tc-items" id="give-items"></div>
+        <button class="ghost tc-cash" data-add-cash="give">${ico("i-sell", "s")} Add cash</button>
+      </div>
+
+      <div class="trade-mid">
+        <div class="tm-pct num ${pctCls}">${give && get ? pct + "%" : "—"}</div>
+        <div class="tm-lbl">of market value</div>
+        <div class="tm-arrow">${ico("i-chev")}</div>
+        <div class="tm-delta num ${delta >= 0 ? "pos" : "neg"}">${give && get ? (delta >= 0 ? "+" : "") + money(delta) : ""}</div>
+        <div class="tm-note dim">${!give ? "Add what you're giving." : !get ? "Add the offer on the right." : pct >= 100 ? "At or above market — strong offer." : pct >= 80 ? "A bit under market — normal for a quick cash-out." : "Well under market — push back or hold."}</div>
+      </div>
+
+      <div class="trade-col" id="col-get">
+        <div class="tc-head"><h3>You get</h3><span class="tc-total num">${money2(get)}</span></div>
+        <div class="tc-items" id="get-items"></div>
+        <div class="tc-adds">
+          <button class="ghost tc-cash" data-add-cash="get">${ico("i-sell", "s")} Add cash</button>
+          <button class="ghost" id="get-add-card">${ico("i-grid", "s")} Add a card</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="trade-exports">
+      <span class="dim">Sell exports:</span>
+      <button class="ghost" id="tcgp-export">${ico("i-export", "s")} TCGplayer sheet</button>
+      <button class="ghost" id="lcs-export">${ico("i-export", "s")} Shop drop-off sheet</button>
+    </div>`;
+
+  const gi = $("#give-items");
+  trade.give.forEach((it, i) => gi.appendChild(tradeItemRow("give", it, i)));
+  if (!trade.give.length) gi.innerHTML = `<div class="tc-empty">Search above to add your cards, or add cash.</div>`;
+  const ge = $("#get-items");
+  trade.get.forEach((it, i) => ge.appendChild(tradeItemRow("get", it, i)));
+  if (!trade.get.length) ge.innerHTML = `<div class="tc-empty">Add the cash offer (or a card) you'd receive.</div>`;
+
+  // Inventory autocomplete (give side, inventory-only)
+  const search = $("#give-search"), drop = $("#give-drop");
+  search.addEventListener("input", () => {
+    const q = search.value.trim().toLowerCase();
+    if (q.length < 2) { drop.classList.add("hidden"); return; }
+    const hits = rows.filter((r) => ((r.name || "") + " " + (r.set_name || "")).toLowerCase().includes(q)).slice(0, 8);
+    if (!hits.length) { drop.innerHTML = `<div class="tc-opt dim">No inventory match</div>`; drop.classList.remove("hidden"); return; }
+    drop.innerHTML = hits.map((r, i) => `<button class="tc-opt" data-i="${rows.indexOf(r)}">
+      ${r.image_url ? `<img src="${esc(r.image_url)}" alt="">` : `<span class="noimg">${ico("i-grid", "s")}</span>`}
+      <span class="o-main"><span class="o-name">${esc(r.name)}</span><span class="o-sub">${esc(subLine(r))}</span></span>
+      <span class="o-price num">${money2(r.market_price || r.price)}</span></button>`).join("");
+    drop.classList.remove("hidden");
+    drop.querySelectorAll(".tc-opt[data-i]").forEach((b) => b.addEventListener("click", () => {
+      const r = rows[+b.dataset.i];
+      trade.give.push({ kind: "card", key: r.natural_key, name: r.name, sub: subLine(r).replace(/<[^>]*>/g, ""),
+        qty: 1, unit: +(r.market_price || r.price) || 0, image_url: r.image_url });
+      saveTrade(); renderTrade();
+    }));
+  });
+  search.addEventListener("blur", () => setTimeout(() => drop.classList.add("hidden"), 200));
+
+  v.querySelectorAll("[data-add-cash]").forEach((b) => b.addEventListener("click", () => {
+    trade[b.dataset.addCash].push({ kind: "cash", unit: 0 }); saveTrade(); renderTrade();
+  }));
+  $("#get-add-card").addEventListener("click", () => {
+    const name = prompt("Card name (what you're trading for):");
+    if (!name) return;
+    const val = parseFloat(prompt("Its market value ($):") || "0") || 0;
+    trade.get.push({ kind: "card", name: name.trim(), sub: "manual entry", qty: 1, unit: val, image_url: null });
+    saveTrade(); renderTrade();
+  });
+  $("#trade-clear")?.addEventListener("click", () => { trade = { give: [], get: [] }; saveTrade(); renderTrade(); });
+  $("#tcgp-export").addEventListener("click", tcgpExport);
+  $("#lcs-export").addEventListener("click", lcsCsv);
 }
 
 function ledger(s) {

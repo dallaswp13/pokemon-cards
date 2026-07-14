@@ -150,6 +150,68 @@ main.app { max-width: 1240px; margin: 0 auto; padding: 16px 32px 64px; }
 .grade-pill { font-size: 11px; font-weight: 700; border: 1px solid var(--amber); color: var(--amber);
   border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
 
+/* ── Trade calculator ─────────────────────────────────────────────────────── */
+.trade-head h2 { margin: 0 0 2px; font-size: 20px; font-weight: 800; }
+.trade-head p { margin: 0 0 14px; font-size: 13px; }
+.linkbtn { border: none; background: none; color: var(--accent); padding: 0; font-size: 13px; }
+.amber { color: var(--amber); }
+.trade-cols { display: grid; grid-template-columns: 1fr 160px 1fr; gap: 14px; align-items: start; }
+.trade-col { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+.tc-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+.tc-head h3 { margin: 0; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+.tc-total { font-size: 18px; font-weight: 800; }
+.tc-search { position: relative; margin-bottom: 10px; }
+.tc-search input { width: 100%; }
+.tc-drop { position: absolute; top: 44px; left: 0; right: 0; z-index: 20; background: var(--surface-raised);
+  border: 1px solid var(--border-strong); border-radius: 10px; padding: 4px; max-height: 340px; overflow: auto;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
+.tc-opt { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none; background: none;
+  padding: 7px 8px; border-radius: 8px; }
+.tc-opt:hover { background: var(--selected-bg); }
+.tc-opt img { width: 26px; height: 36px; object-fit: cover; border-radius: 3px; }
+.tc-opt .noimg { width: 26px; height: 36px; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
+.tc-opt .o-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tc-opt .o-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc-opt .o-sub { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc-opt .o-price { font-size: 12px; color: var(--text-2); }
+.tc-items { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.tc-empty { font-size: 12px; color: var(--text-3); padding: 10px 2px; }
+.trade-item { display: flex; align-items: center; gap: 9px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; }
+.ti-img { width: 30px; height: 42px; object-fit: cover; border-radius: 4px; }
+.ti-cash { width: 30px; height: 42px; display: flex; align-items: center; justify-content: center; color: var(--money); }
+.ti-main { flex: 1; min-width: 0; }
+.ti-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ti-sub { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ti-qty { display: inline-flex; align-items: center; gap: 6px; }
+.ti-qty button { width: 24px; height: 24px; padding: 0; border-radius: 6px; font-size: 15px; line-height: 1; }
+.ti-amt { display: flex; align-items: center; gap: 2px; font-size: 13px; color: var(--text-2); }
+.ti-unit { width: 66px; height: 32px; text-align: right; padding: 0 6px; }
+.ti-x { width: 28px; height: 28px; padding: 0; border: none; color: var(--text-3); display: inline-flex; align-items: center; justify-content: center; }
+.ti-x:hover { color: var(--danger); }
+.tc-cash { width: 100%; }
+.tc-adds { display: flex; gap: 8px; }
+.tc-adds button { flex: 1; }
+.trade-mid { position: sticky; top: 72px; text-align: center; padding: 14px 6px; }
+.tm-pct { font-size: 40px; font-weight: 800; line-height: 1; }
+.tm-lbl { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
+.tm-arrow { color: var(--text-3); margin: 8px 0; }
+.tm-delta { font-size: 16px; font-weight: 700; }
+.tm-note { font-size: 12px; margin-top: 8px; line-height: 1.4; }
+.trade-exports { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 18px;
+  padding-top: 14px; border-top: 1px solid var(--border); font-size: 13px; }
+@media (max-width: 819px) {
+  .trade-cols { grid-template-columns: 1fr; }
+  .trade-mid { position: static; order: 3; border: 1px solid var(--border-strong); border-radius: 14px;
+    background: var(--surface-raised); display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px;
+    align-items: center; text-align: left; padding: 14px; }
+  .trade-mid .tm-pct { grid-row: 1 / 3; font-size: 34px; }
+  .trade-mid .tm-lbl { grid-column: 2; align-self: end; }
+  .trade-mid .tm-delta { grid-column: 3; grid-row: 1 / 3; }
+  .trade-mid .tm-arrow { display: none; }
+  .trade-mid .tm-note { grid-column: 1 / 4; }
+  #col-give { order: 1; } #col-get { order: 2; }
+}
+
 /* Card-panel: grading breakdown + value-over-time */
 .grade-box, .trend-box { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-top: 4px; background: var(--surface); }
 .gb-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; padding: 3px 0; }
