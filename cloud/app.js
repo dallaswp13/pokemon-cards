@@ -3,7 +3,7 @@
    quick-actions on every card, exports living inside their Cash Out lanes.
    Vanilla JS + Supabase. ?demo=1 loads a sample collection with no writes. */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl } from "./engine.js";
+import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl, jpFallbackUrl, sealedImageUrl } from "./engine.js";
 
 const SUPABASE_URL = "https://xmcohwtftpmnanootpia.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY29od3RmdHBtbmFub290cGlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODU5NTcsImV4cCI6MjA5OTI2MTk1N30.YVOa8JBdaJH9aXXsyUjOhdwKiohj4SZ6rVia36KfP0k";
@@ -333,7 +333,8 @@ function decideRow(r, compact = false) {
 }
 function imgTag(r, cls = "") {
   if (!r.image_url) return `<div class="noimg">${r.bucket === "sealed" ? ico("i-box", "l") : ico("i-grid")}</div>`;
-  const fb = r.bucket === "mtg" ? mtgFuzzyImageUrl(r.name) : null;
+  const fb = r.bucket === "mtg" ? mtgFuzzyImageUrl(r.name)
+    : (r.flags || []).includes("japanese") ? jpFallbackUrl(r.set_name, r.number) : null;
   const fbAttr = fb && fb !== r.image_url ? ` data-fb="${esc(fb)}"` : "";
   return `<img ${cls ? `class="${cls}"` : ""} loading="lazy" src="${r.image_url}"${fbAttr} onerror="if(this.dataset.fb){this.src=this.dataset.fb;delete this.dataset.fb}else{this.classList.add('broken')}" alt="">`;
 }
@@ -1068,6 +1069,20 @@ async function importCsv(file) {
       const prev = existing[c.natural_key];
       if (prev?.photos?.length) c.photos = prev.photos;
     });
+    // Sealed art: exact-name lookup against the tcgp_products mirror.
+    const sealedRows = cards.filter((c) => c.bucket === "sealed" && !c.image_url);
+    if (sealedRows.length) {
+      setStatus(`Matching ${sealedRows.length} sealed products…`);
+      try {
+        for (let i = 0; i < sealedRows.length; i += 100) {
+          const chunk = sealedRows.slice(i, i + 100);
+          const { data } = await sb.from("tcgp_products").select("product_id,name")
+            .in("name", chunk.map((c) => c.name));
+          const byName = Object.fromEntries((data || []).map((p) => [p.name, p.product_id]));
+          chunk.forEach((c) => { if (byName[c.name]) c.image_url = sealedImageUrl(byName[c.name]); });
+        }
+      } catch (e) { /* lookup table optional */ }
+    }
     const ygo = cards.filter((c) => c.bucket === "ygo" && !c.image_url);
     if (ygo.length) {
       setStatus(`Fetching ${ygo.length} Yu-Gi-Oh images…`);
