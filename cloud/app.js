@@ -634,7 +634,7 @@ function firstRun() {
 // stay at the same x across searches/re-renders — rapid filing needs a fixed
 // target, not columns that re-flow with content. Card gets the remainder.
 const TCOLS = [
-  ["sel", null, null, 36], ["", null, null, 44], ["Card", null, null, 0], ["Cond", null, null, 60],
+  ["sel", null, null, 36], ["", null, null, 44], ["Card", null, null, 0], ["Cond", null, null, 76],
   ["Qty", "num", null, 48], ["Mkt", "num", "market", 88], ["Net", "num", "value", 80],
   ["Net %", "num", "netpct", 64], ["Route", null, null, 112], ["PSA 10", "num", null, 88],
   ["×", "num", "psa10x", 52], ["File", null, null, 186],
@@ -645,13 +645,14 @@ function renderTable(pool) {
   const t = document.createElement("table");
   t.className = "positions fixedcols";
   const poolIds = new Set(pool.map((r) => r.id));
+  const canSelect = pool.some((r) => isRaw(r.bucket));   // graded/sealed: no batch filing
   const allSel = pool.length > 0 && pool.every((r) => selected.has(r.id));
   t.innerHTML = `<colgroup>${TCOLS.map(([, , , wpx]) => wpx ? `<col style="width:${wpx}px">` : "<col>").join("")}</colgroup>
     <thead><tr>${TCOLS.map(([label, cls, sk]) =>
     label === "sel"
-      ? `<th><input type="checkbox" id="sel-all-t" ${allSel ? "checked" : ""} aria-label="Select all in this view"></th>`
+      ? `<th>${canSelect ? `<input type="checkbox" id="sel-all-t" ${allSel ? "checked" : ""} aria-label="Select all in this view">` : ""}</th>`
       : `<th class="${cls || ""}" ${sk ? `data-sort="${sk}"` : ""}>${label}${sk === sortKey ? ' <span class="arrow">▼</span>' : ""}</th>`).join("")}</tr></thead><tbody></tbody>`;
-  t.querySelector("#sel-all-t").addEventListener("click", (ev) => {
+  t.querySelector("#sel-all-t")?.addEventListener("click", (ev) => {
     ev.stopPropagation();
     const on = ev.currentTarget.checked;
     pool.forEach((r) => on ? selected.add(r.id) : selected.delete(r.id));
@@ -664,21 +665,22 @@ function renderTable(pool) {
     const ctx = { pool, i };
     if (i === kfocus) tr.classList.add("kfocus");
     const showPsa = psaEligible(r);
+    const raw = isRaw(r.bucket);   // graded/sealed: no filing controls
     tr.innerHTML = `
-      <td><input type="checkbox" class="selbox" data-id="${r.id}" ${selected.has(r.id) ? "checked" : ""} aria-label="Select ${esc(r.name)}"></td>
+      <td>${raw ? `<input type="checkbox" class="selbox" data-id="${r.id}" ${selected.has(r.id) ? "checked" : ""} aria-label="Select ${esc(r.name)}">` : ""}</td>
       <td>${r.image_url ? `<img class="th" loading="lazy" src="${r.image_url}" alt="">` : ""}</td>
       <td><div class="cell-name">${esc(r.name)}</div><div class="cell-sub">${subLine(r)}</div></td>
       <td>${gradeNum(r) ? `<span class="grade-pill num">${gradeNum(r)}</span>` : r.condition && r.condition !== "NM" ? `<span class="fl" style="border-color:var(--amber);color:var(--amber);font-size:11px;border:1px solid;border-radius:4px;padding:0 5px">${r.condition}</span>` : ""}</td>
       <td class="num dim">${(r.qty || 1) > 1 ? "×" + r.qty : ""}</td>
       <td class="num">${money2(r.market_price || r.price)}</td>
-      <td class="num net">${money(r.net_unit || 0)}</td>
-      <td class="num dim">${Math.round((r.net_pct || 0) * 100)}%</td>
-      <td><span class="route">${esc((r.channel || "").replace(" (", " ").replace(")", ""))}</span></td>
+      <td class="num net">${raw ? money(r.net_unit || 0) : ""}</td>
+      <td class="num dim">${raw ? Math.round((r.net_pct || 0) * 100) + "%" : ""}</td>
+      <td>${raw ? `<span class="route">${esc((r.channel || "").replace(" (", " ").replace(")", ""))}</span>` : ""}</td>
       <td class="num">${showPsa && r.psa10 ? (r.psa10_real ? "" : "~") + money(r.psa10) : ""}</td>
       <td class="num ${showPsa && r.psa10_x >= 8 ? "x-hot" : "dim"}">${showPsa && r.psa10_x ? r.psa10_x + "×" : ""}</td>
-      <td><div class="filecell">${DECISIONS.map((d) => `<button data-file="${d.key}" class="d-${d.key} ${decisionOf(r) === d.key ? "on" : ""}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div></td>`;
+      <td>${raw ? `<div class="filecell">${DECISIONS.map((d) => `<button data-file="${d.key}" class="d-${d.key} ${decisionOf(r) === d.key ? "on" : ""}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div>` : ""}</td>`;
     tr.addEventListener("click", () => openCard(r, ctx));
-    tr.querySelector(".selbox").addEventListener("click", (ev) => {
+    tr.querySelector(".selbox")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
       ev.currentTarget.checked ? selected.add(r.id) : selected.delete(r.id);
       updateBatchBar();
