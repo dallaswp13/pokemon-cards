@@ -3,7 +3,7 @@
    quick-actions on every card, exports living inside their Cash Out lanes.
    Vanilla JS + Supabase. ?demo=1 loads a sample collection with no writes. */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl, jpFallbackUrl, sealedImageUrl } from "./engine.js";
+import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl, jpFallbackUrl, sealedImageUrl, routeRow } from "./engine.js";
 
 const SUPABASE_URL = "https://xmcohwtftpmnanootpia.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY29od3RmdHBtbmFub290cGlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODU5NTcsImV4cCI6MjA5OTI2MTk1N30.YVOa8JBdaJH9aXXsyUjOhdwKiohj4SZ6rVia36KfP0k";
@@ -15,6 +15,20 @@ const $ = (s) => document.querySelector(s);
 const CAP = 300;
 const COND_FACTORS = { NM: 1.0, LP: 0.9, MP: 0.75, HP: 0.6, DMG: 0.5 };
 const CONDS = ["NM", "LP", "MP", "HP", "DMG"];
+const catOf = (b) => ({ pkmn: "Pokemon", mtg: "Magic: The Gathering", ygo: "YuGiOh", op: "One Piece" }[b] || "Pokemon");
+// Recompute price and every price-derived field (net, shop offers, band,
+// channel, grading EV) whenever the market price or condition changes — the
+// net figure must always track the price it's shown next to. Preserves real
+// PSA-10 data and the language/art flags routeRow doesn't know about.
+function derivePricePatch(r, { market = r.market_price, condition = r.condition } = {}) {
+  const mkt = +market || 0;
+  const price = Math.round(mkt * (COND_FACTORS[condition] || 1) * 100) / 100;
+  const route = routeRow(catOf(r.bucket), r.set_name, r.rarity || "", r.name, r.variance, r.number, price);
+  const keepFlags = (r.flags || []).filter((f) => f === "japanese" || f === "art-card");
+  const patch = { condition, market_price: mkt, price, ...route, flags: [...route.flags, ...keepFlags] };
+  if (r.psa10_real) { patch.psa10 = r.psa10; patch.psa10_x = price ? Math.round((r.psa10 / price) * 10) / 10 : 0; }
+  return patch;
+}
 const GAMES = [["pkmn", "Pokemon"], ["mtg", "MTG"], ["ygo", "Yu-Gi-Oh"], ["op", "One Piece"]];
 const DECISIONS = [
   { key: "sell",  icon: "i-sell",  label: "Sell",  aria: "Sell as-is" },
@@ -44,6 +58,7 @@ let kfocus = -1;
 let undoState = null;
 let toastTimer = null;
 let selected = new Set();   // row ids checked for batch filing (list/table views)
+let pricing = null;         // {done,total} while a live price refresh is running
 
 const money = (n) => "$" + Math.round(n).toLocaleString();
 const plural = (n, s) => n + " " + s + (n === 1 ? "" : "s");
@@ -194,7 +209,7 @@ function updateBatchBar() {
   const bar = document.createElement("div");
   bar.id = "batch-bar";
   bar.innerHTML = `<span class="num"><b>${n}</b> selected</span>
-    ${DECISIONS.map((d) => `<button data-batch="${d.key}" title="File all to ${d.label}">${ico(d.icon, "s")}<span>${d.label}</span></button>`).join("")}
+    ${DECISIONS.map((d) => `<button class="d-${d.key}" data-batch="${d.key}" title="File all to ${d.label}">${ico(d.icon, "s")}<span>${d.label}</span></button>`).join("")}
     <button class="ghost" id="batch-clear" aria-label="Clear selection">${ico("i-x", "s")}</button>`;
   document.body.appendChild(bar);
   bar.querySelectorAll("[data-batch]").forEach((b) => b.addEventListener("click", () => fileBatch(b.dataset.batch)));
@@ -238,23 +253,42 @@ function ladder(s) {
   return rungs;
 }
 
+// The strip tracks PRICE freshness, not decisions: the bar fills as cards get
+// real market/PSA-10 prices (and animates live during a refresh). Undecided
+// count lives on the pile selector below, so it isn't duplicated here.
 function renderStrip() {
   const s = stats();
   const rungs = ladder(s);
-  const total = s.raw.length, done = total - s.undecided.length;
-  const pct = total ? Math.round((done / total) * 100) : 0;
+  const priceable = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10).length;
   $("#hd-stat").innerHTML = rows.length ? `<div class="lbl">projected net</div><div class="val num">${money(s.net)}</div>` : "";
+
+  let count, msg, pct, sub;
+  if (pricing) {
+    count = Math.max(0, pricing.total - pricing.done);
+    msg = "Refreshing live prices…";
+    pct = pricing.total ? Math.round((pricing.done / pricing.total) * 100) : 100;
+    sub = `${pricing.done.toLocaleString()} of ${pricing.total.toLocaleString()} priced`;
+  } else if (!rows.length) {
+    count = 0; msg = "No collection yet."; pct = 0; sub = "Import a Collectr export to begin.";
+  } else {
+    const priced = Math.max(0, priceable - s.stale);
+    count = s.stale;
+    msg = !priceable ? "No cards need live pricing." : s.stale ? "cards still on estimated prices." : "Every card has a live price.";
+    pct = priceable ? Math.round((priced / priceable) * 100) : 100;
+    sub = `${priced.toLocaleString()} of ${priceable.toLocaleString()} priced live`;
+  }
+
   $("#next-up").innerHTML = `
-    <div class="nu-count num">${s.undecided.length}</div>
+    <div class="nu-count num">${count}</div>
     <div class="nu-body">
-      <div class="nu-msg" id="nu-status">${rows.length ? (s.undecided.length ? "cards are waiting on you." : "Nothing waiting — work the line.") : "No collection yet."}</div>
-      <div class="nu-bar"><i style="width:${pct}%"></i></div>
-      <div class="nu-sub num">${done.toLocaleString()} of ${total.toLocaleString()} decided</div>
+      <div class="nu-msg" id="nu-status">${msg}</div>
+      <div class="nu-bar ${pricing ? "live" : ""}"><i style="width:${pct}%"></i></div>
+      <div class="nu-sub num">${sub}</div>
     </div>
     <div class="nu-right">
       <div class="nu-actions">
         ${rungs.slice(1, 3).map((r, i) => `<button class="nu-chip" data-rung="${i + 1}">${esc(r.label)}</button>`).join("")}
-        <button class="cta" id="nu-cta">${esc(rungs[0].label)}</button>
+        <button class="cta" id="nu-cta" ${pricing ? "disabled" : ""}>${esc(rungs[0].label)}</button>
       </div>
       <div class="nu-session num">${tally()} decided this session</div>
     </div>`;
@@ -329,7 +363,7 @@ function metaLine(r) {
 function decideRow(r, compact = false) {
   const cur = decisionOf(r);
   return `<div class="decide-row" role="group" aria-label="File this card">` + DECISIONS.map((d) =>
-    `<button data-file="${d.key}" class="${cur === d.key ? "on" : ""}" title="${d.aria}" aria-label="${d.aria}">${ico(d.icon, compact ? "s" : "")}</button>`).join("") + `</div>`;
+    `<button data-file="${d.key}" class="d-${d.key} ${cur === d.key ? "on" : ""}" title="${d.aria}" aria-label="${d.aria}">${ico(d.icon, compact ? "s" : "")}</button>`).join("") + `</div>`;
 }
 function imgTag(r, cls = "") {
   if (!r.image_url) return `<div class="noimg">${r.bucket === "sealed" ? ico("i-box", "l") : ico("i-grid")}</div>`;
@@ -443,12 +477,13 @@ function renderDecide() {
   }).join("");
   const allVal = base.reduce((a, r) => a + r.price * (isRaw(r.bucket) ? (r.qty || 1) : 1), 0);
 
-  // Rarity facet is data-driven: the rarities actually present in this pile+game,
-  // busiest first. Mirrors how the physical binder is organized.
+  // Rarity facet is data-driven: every rarity actually present in this
+  // pile+game, busiest first. Mirrors how the physical binder is organized.
   const gamePool = base.filter((r) => !gameChip || r.bucket === gameChip);
   const rarCounts = new Map();
   gamePool.forEach((r) => { const k = r.rarity || ""; if (k) rarCounts.set(k, (rarCounts.get(k) || 0) + 1); });
-  const rarities = [...rarCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const rarities = [...rarCounts.entries()].sort((a, b) => b[1] - a[1]);
+  const rarityMissing = rawPile && !rarities.length && gamePool.length > 0;   // pre-rarity import
   [...filters.rarity].forEach((k) => { if (!rarCounts.has(k)) filters.rarity.delete(k); });
 
   const fchip = (facet, key, label, extra = "") =>
@@ -487,6 +522,8 @@ function renderDecide() {
     </div>
     ${rarities.length ? `<div class="filter-bar rar">
       <span class="fgroup">Rarity</span>${rarities.map(([k, n]) => fchip("rarity", k, esc(k), ` <span class="fc num">${n}</span>`)).join("")}
+    </div>` : rarityMissing ? `<div class="filter-bar rar">
+      <span class="fgroup">Rarity</span><span class="dim" style="font-size:12px">Re-import your export (Data → Import) to filter by rarity.</span>
     </div>` : ""}` : ""}
     <div id="decide-body"></div>`;
 
@@ -622,7 +659,7 @@ function renderTable(pool) {
       <td><span class="route">${esc((r.channel || "").replace(" (", " ").replace(")", ""))}</span></td>
       <td class="num">${showPsa && r.psa10 ? (r.psa10_real ? "" : "~") + money(r.psa10) : ""}</td>
       <td class="num ${showPsa && r.psa10_x >= 8 ? "x-hot" : "dim"}">${showPsa && r.psa10_x ? r.psa10_x + "×" : ""}</td>
-      <td><div class="filecell">${DECISIONS.map((d) => `<button data-file="${d.key}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div></td>`;
+      <td><div class="filecell">${DECISIONS.map((d) => `<button data-file="${d.key}" class="d-${d.key} ${decisionOf(r) === d.key ? "on" : ""}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div></td>`;
     tr.addEventListener("click", () => openCard(r, ctx));
     tr.querySelector(".selbox").addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -671,10 +708,11 @@ function renderPrep() {
     row.querySelectorAll("[data-c]").forEach((b) => b.addEventListener("click", async (ev) => {
       ev.stopPropagation();
       const cond = b.dataset.c;
-      const price = Math.round((r.market_price || 0) * (COND_FACTORS[cond] || 1) * 100) / 100;
-      await save(r, { condition: cond, price, tags: (r.tags || []).filter((t) => t !== "not-nm") });
+      const patch = derivePricePatch(r, { condition: cond });
+      patch.tags = (r.tags || []).filter((t) => t !== "not-nm");
+      await save(r, patch);
       row.classList.add("flash");
-      toast(`${r.name}: ${cond} — price updated to ${money2(price)}`);
+      toast(`${r.name}: ${cond} — ${money2(patch.price)}, nets ${money(patch.net_unit || 0)}`);
       setTimeout(renderAll, 500);
     }));
     r1.appendChild(row);
@@ -859,7 +897,7 @@ function openCard(r, ctx = null) {
 
         <div class="m-seclbl">File this card</div>
         <div class="m-decide">${DECISIONS.map((d) =>
-          `<button data-file="${d.key}" class="${cur === d.key ? "on" : ""}" aria-label="${d.aria}">${ico(d.icon)}<span>${d.label}</span></button>`).join("")}</div>
+          `<button data-file="${d.key}" class="d-${d.key} ${cur === d.key ? "on" : ""}" aria-label="${d.aria}">${ico(d.icon)}<span>${d.label}</span></button>`).join("")}</div>
         <div class="m-tools">
           <button class="ghost ${offC(r) ? "active tog-chip" : ""}" id="m-oc">${ico("i-offcenter", "s")} Off-center${offC(r) ? " ✓" : ""}</button>
           <button class="ghost" id="m-ebay">${ico("i-copy", "s")} Copy eBay listing</button>
@@ -878,10 +916,11 @@ function openCard(r, ctx = null) {
   if (isRaw(r.bucket)) {
     panel.querySelectorAll("#m-cond [data-c]").forEach((b) => b.addEventListener("click", async () => {
       const cond = b.dataset.c;
-      const price = Math.round((r.market_price || 0) * (COND_FACTORS[cond] || 1) * 100) / 100;
-      await save(r, { condition: cond, price, tags: (r.tags || []).filter((t) => t !== "not-nm") });
+      const patch = derivePricePatch(r, { condition: cond });
+      patch.tags = (r.tags || []).filter((t) => t !== "not-nm");
+      await save(r, patch);
       renderAll(); openCard(r, ctxHere);
-      toast(`Condition ${cond} — price updated to ${money2(price)}`);
+      toast(`Condition ${cond} — ${money2(patch.price)}, nets ${money(patch.net_unit || 0)}`);
     }));
     panel.querySelectorAll(".m-decide [data-file]").forEach((b) => b.addEventListener("click", async () => {
       await fileCard(r, b.dataset.file);
@@ -1146,6 +1185,8 @@ async function updatePrices() {
   let done = 0, hit = 0, failed = 0, notConfigured = false;
   const hist = [];
   const queue = [...targets];
+  pricing = { done: 0, total: targets.length };
+  renderStrip();
   const worker = async () => {
     while (queue.length && !notConfigured) {
       const r = queue.shift();
@@ -1159,21 +1200,26 @@ async function updatePrices() {
         if (resp.status === 503) { notConfigured = true; break; }
         if (resp.ok) {
           const d = await resp.json();
-          const patch = {};
-          if (d.loose) { patch.market_price = d.loose; patch.price = Math.round(d.loose * (COND_FACTORS[r.condition || "NM"] || 1) * 100) / 100; }
-          if (d.psa10) { patch.psa10 = d.psa10; patch.psa10_real = true; }
-          const base = patch.price || r.price;
-          if (patch.psa10 && base) patch.psa10_x = Math.round((patch.psa10 / base) * 10) / 10;
-          if (Object.keys(patch).length) { await save(r, patch); hist.push({ natural_key: r.natural_key, price: r.price, psa10: r.psa10 || 0 }); hit++; }
+          let patch = null;
+          if (d.loose) patch = derivePricePatch(r, { market: d.loose });   // reprice net/shop/route off the real market
+          if (d.psa10) {
+            patch = patch || {};
+            patch.psa10 = d.psa10; patch.psa10_real = true;
+            const base = patch.price || r.price;
+            if (base) patch.psa10_x = Math.round((d.psa10 / base) * 10) / 10;
+          }
+          if (patch) { await save(r, patch); hist.push({ natural_key: r.natural_key, price: r.price, psa10: r.psa10 || 0 }); hit++; }
           else failed++;
         } else failed++;
       } catch (e) { failed++; }
       done++;
-      if (done % 5 === 0) setStatus(`Pricing ${done} of ${targets.length}…`);
+      pricing.done = done;
+      if (done % 3 === 0) renderStrip();
     }
   };
   await Promise.all([worker(), worker(), worker(), worker()]);
   for (let i = 0; i < hist.length; i += 500) await sb.from("price_history").insert(hist.slice(i, i + 500));
+  pricing = null;
   if (notConfigured) toast("Real prices need the PriceCharting key configured server-side.");
   else toast(`Updated ${hit} cards with real prices${failed ? ` · ${failed} no clean match` : ""}`);
   renderAll();
