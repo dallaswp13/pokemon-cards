@@ -27,8 +27,8 @@ const DKEY_TAG = { sell: "sell", grade: "to-grade", shop: "shop", check: "not-nm
 // Piles unify the old Decide/Browse split: one grid, one selector. "undecided"
 // is the working queue; the rest are where filed cards live (incl. Keep).
 const PILES = [
-  ["undecided", "Undecided"], ["sell", "Sell"], ["keep", "Keep"], ["grade", "Grade"],
-  ["shop", "Shop"], ["check", "Check"], ["graded", "Graded"], ["sealed", "Sealed"], ["all", "All"],
+  ["all", "All"], ["undecided", "Undecided"], ["sell", "Sell"], ["keep", "Keep"], ["grade", "Grade"],
+  ["shop", "Shop"], ["check", "Check"], ["graded", "Graded"], ["sealed", "Sealed"],
 ];
 
 let rows = [];
@@ -43,6 +43,7 @@ const filters = { search: "", price: new Set(), route: new Set(), rarity: new Se
 let kfocus = -1;
 let undoState = null;
 let toastTimer = null;
+let selected = new Set();   // row ids checked for batch filing (list/table views)
 
 const money = (n) => "$" + Math.round(n).toLocaleString();
 const plural = (n, s) => n + " " + s + (n === 1 ? "" : "s");
@@ -51,6 +52,9 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": 
 const ico = (name, size = "") => `<svg class="ic ${size}" aria-hidden="true"><use href="#${name}"/></svg>`;
 const hasTag = (r, t) => (r.tags || []).includes(t);
 const offC = (r) => hasTag(r, "off-center");
+// A damaged or off-center card is not gem-mint material — showing a PSA-10
+// payday on it is a lie the user asked us to stop telling.
+const psaEligible = (r) => (r.condition || "NM") === "NM" && !offC(r);
 const isRaw = (b) => ["pkmn", "mtg", "ygo", "op"].includes(b);
 const decisionOf = (r) => r.keep ? "keep" : hasTag(r, "sell") ? "sell" : hasTag(r, "to-grade") ? "grade" : hasTag(r, "shop") ? "shop" : hasTag(r, "not-nm") ? "check" : null;
 const decided = (r) => decisionOf(r) !== null;
@@ -152,6 +156,55 @@ async function fileCard(r, dkey, el = null) {
   if (now) toast(`Filed to ${DLABEL[dkey]}`, async () => { await save(r, prev); if (!was) bumpTally(-1); renderAll(); });
 }
 
+// ── Batch filing ─────────────────────────────────────────────────────────────
+// Check rows in list/table view, then file them all at once. Unlike fileCard
+// this SETS the decision (no toggle) so re-filing an already-filed card is a
+// no-op, and the whole batch is one undo.
+function decisionPatch(r, dkey) {
+  const clean = (r.tags || []).filter((t) => !["sell", "to-grade", "shop", "not-nm"].includes(t));
+  return dkey === "keep" ? { keep: true, tags: clean } : { keep: false, tags: [...clean, DKEY_TAG[dkey]] };
+}
+async function fileBatch(dkey) {
+  const targets = currentPool().filter((r) => selected.has(r.id) && isRaw(r.bucket));
+  if (!targets.length) return;
+  const snaps = targets.map((r) => [r, { keep: r.keep, tags: [...(r.tags || [])] }]);
+  let newly = 0;
+  for (let i = 0; i < targets.length; i += 10) {
+    await Promise.all(targets.slice(i, i + 10).map(async (r) => {
+      const was = decided(r);
+      await save(r, decisionPatch(r, dkey));
+      if (!was) newly++;
+    }));
+    if (targets.length > 30) setStatus(`Filing ${Math.min(i + 10, targets.length)}/${targets.length}…`);
+  }
+  bumpTally(newly);
+  selected.clear();
+  renderAll();
+  toast(`Filed ${plural(targets.length, "card")} to ${DLABEL[dkey]}`, async () => {
+    for (let i = 0; i < snaps.length; i += 10)
+      await Promise.all(snaps.slice(i, i + 10).map(([r, prev]) => save(r, prev)));
+    bumpTally(-newly);
+    renderAll();
+  });
+}
+function updateBatchBar() {
+  document.getElementById("batch-bar")?.remove();
+  const n = [...selected].length;
+  if (!n || station !== "decide") return;
+  const bar = document.createElement("div");
+  bar.id = "batch-bar";
+  bar.innerHTML = `<span class="num"><b>${n}</b> selected</span>
+    ${DECISIONS.map((d) => `<button data-batch="${d.key}" title="File all to ${d.label}">${ico(d.icon, "s")}<span>${d.label}</span></button>`).join("")}
+    <button class="ghost" id="batch-clear" aria-label="Clear selection">${ico("i-x", "s")}</button>`;
+  document.body.appendChild(bar);
+  bar.querySelectorAll("[data-batch]").forEach((b) => b.addEventListener("click", () => fileBatch(b.dataset.batch)));
+  bar.querySelector("#batch-clear").addEventListener("click", () => {
+    selected.clear();
+    document.querySelectorAll(".selbox, #sel-all-t").forEach((cb) => { cb.checked = false; });
+    updateBatchBar();
+  });
+}
+
 // ── Next-Up ladder ───────────────────────────────────────────────────────────
 function stats() {
   const raw = rows.filter((r) => isRaw(r.bucket));
@@ -166,15 +219,16 @@ function stats() {
   const mkt = sellable.reduce((a, r) => a + r.price * (r.qty || 1), 0);
   const net = sellable.reduce((a, r) => a + (r.net_unit || 0) * (r.qty || 1), 0);
   const keepers = raw.filter((r) => r.keep);
+  const stale = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10 && !r.psa10_real).length;
   return { raw, undecided, sellRows, checkRows, photosNeeded, tcgpReady, shopRows, ebayReady, mkt, net,
            keepers, keepersVal: keepers.reduce((a, r) => a + r.price * (r.qty || 1), 0),
-           gradePile: raw.filter((r) => hasTag(r, "to-grade")) };
+           gradePile: raw.filter((r) => hasTag(r, "to-grade")), stale };
 }
 
 function ladder(s) {
   const rungs = [];
   if (!rows.length) rungs.push({ label: "Import your collection", go: () => $("#import-file").click() });
-  if (s.undecided.length) rungs.push({ label: "Start deciding", go: () => nav("decide") });
+  if (s.stale) rungs.push({ label: `Refresh ${s.stale} price${s.stale > 1 ? "s" : ""}`, go: updatePrices });
   if (s.checkRows.length) rungs.push({ label: `Set ${s.checkRows.length} condition${s.checkRows.length > 1 ? "s" : ""}`, go: () => nav("prep") });
   if (s.photosNeeded.length) rungs.push({ label: `Photograph ${s.photosNeeded.length} card${s.photosNeeded.length > 1 ? "s" : ""}`, go: () => nav("prep") });
   if (s.tcgpReady.length) rungs.push({ label: "Export TCGplayer sheet", go: () => nav("cashout") });
@@ -252,6 +306,7 @@ function renderAll() {
   if (station === "decide") renderDecide();
   else if (station === "prep") renderPrep();
   else if (station === "cashout") renderCashout();
+  if (station !== "decide") updateBatchBar();   // removes the bar off-station
 }
 
 // ── Shared card pieces ───────────────────────────────────────────────────────
@@ -265,7 +320,7 @@ function metaLine(r) {
     const label = r.grade && r.grade !== "Ungraded" ? r.grade : r.bucket === "sealed" ? "Sealed — hold" : "Hold";
     return `<div class="t-meta">${esc(label)}</div>`;
   }
-  if (r.bucket === "pkmn" && (r.psa10_x || 0) >= 4) {
+  if (r.bucket === "pkmn" && psaEligible(r) && (r.psa10_x || 0) >= 4) {
     const hot = r.psa10_x >= 8;
     return `<div class="t-meta ${hot ? "hot" : ""} num">PSA 10 ${r.psa10_real ? "" : "~"}${money(r.psa10)} · ${r.psa10_x}×${hot ? " — don't sell raw" : ""}</div>`;
   }
@@ -299,7 +354,7 @@ function tile(r, showPile = false, ctx = null) {
   el.className = "tile";
   const cond = r.condition && r.condition !== "NM" ? `<span class="cond">${r.condition}</span>` : "";
   const fl = [];
-  if (r.grade_flag && !offC(r)) fl.push(`<span class="fl amber">Grade +${money(r.grade_gap || 0)}</span>`);
+  if (r.grade_flag && psaEligible(r)) fl.push(`<span class="fl amber">Grade +${money(r.grade_gap || 0)}</span>`);
   if ((r.flags || []).includes("japanese")) fl.push(`<span class="fl">JP</span>`);
   if ((r.flags || []).some((f) => String(f).startsWith("ebay-authenticity"))) fl.push(`<span class="fl">$250+ auth</span>`);
   const pile = decisionOf(r);
@@ -323,11 +378,17 @@ function listRow(r, ctx = null) {
   const el = document.createElement("div");
   el.className = "rowc";
   el.innerHTML = `
+    <input type="checkbox" class="selbox" data-id="${r.id}" ${selected.has(r.id) ? "checked" : ""} aria-label="Select ${esc(r.name)}">
     ${imgTag(r)}
     <div class="r-main"><div class="r-name">${esc(r.name)}</div><div class="r-sub">${subLine(r)}</div></div>
     <div class="r-price num">${money2(r.price)}${(r.qty || 1) > 1 ? ` <span class="dim">×${r.qty}</span>` : ""}</div>
     ${decideRow(r, true)}`;
   el.addEventListener("click", () => openCard(r, ctx));
+  el.querySelector(".selbox").addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    ev.currentTarget.checked ? selected.add(r.id) : selected.delete(r.id);
+    updateBatchBar();
+  });
   wireFileButtons(el, r);
   return el;
 }
@@ -369,12 +430,11 @@ function renderDecide() {
 
   const pileHtml = PILES.map(([key, label]) => {
     const n = pileRows(key).length;
-    if (!n && key !== "undecided") return "";
-    return `<button class="pchip ${pileKey === key ? "active" : ""}" data-pile="${key}">${label}<span class="c num">${n}</span></button>`;
+    return `<button class="pchip ${pileKey === key ? "active" : ""} ${n ? "" : "zero"}" data-pile="${key}">${label}<span class="c num">${n}</span></button>`;
   }).join("");
 
   const gameBase = (key) => base.filter((r) => r.bucket === key);
-  const chips = !rawPile ? "" : GAMES.filter(([key]) => rows.some((r) => r.bucket === key)).map(([key, label]) => {
+  const chips = !rawPile ? "" : GAMES.map(([key, label]) => {
     const g = gameBase(key);
     const val = g.reduce((a, r) => a + r.price * (r.qty || 1), 0);
     return `<button class="gchip ${gameChip === key ? "active" : ""}" data-chip="${key}">${label}
@@ -395,7 +455,6 @@ function renderDecide() {
       data-facet="${facet}" data-fkey="${esc(key)}">${label}${extra}</button>`;
 
   v.innerHTML = `
-    ${DEMO ? "" : priceBannerHtml(s)}
     <div class="chips pile-row">${pileHtml}</div>
     <div class="chips">
       <button class="gchip ${!gameChip ? "active" : ""}" data-chip="">All games
@@ -413,6 +472,7 @@ function renderDecide() {
         <button id="vm-grid" class="${viewMode === "grid" ? "active" : ""}" aria-label="Grid view">${ico("i-grid")}</button>
         <button id="vm-list" class="${viewMode === "list" ? "active" : ""}" aria-label="List view">${ico("i-list")}</button>
       </div>
+      ${viewMode === "list" && rawPile ? `<button class="ghost" id="sel-all">Select all</button>` : ""}
     </div>
     ${rawPile ? `
     <div class="filter-bar">
@@ -432,6 +492,11 @@ function renderDecide() {
   const body = $("#decide-body");
   function fillBody() {
     const pool2 = currentPool();
+    // Selection only ever means "checked cards in the current view" — prune
+    // anything the active filter/search no longer shows.
+    const ids = new Set(pool2.map((r) => r.id));
+    [...selected].forEach((id) => { if (!ids.has(id)) selected.delete(id); });
+    updateBatchBar();
     body.innerHTML = "";
     if (!pool2.length) { body.appendChild(decideEmpty(stats())); return; }
     if (viewMode === "list" && window.innerWidth >= 960) body.appendChild(renderTable(pool2.slice(0, CAP)));
@@ -461,6 +526,12 @@ function renderDecide() {
   $("#sortsel").addEventListener("change", (e) => { sortKey = e.target.value; fillBody(); });
   $("#vm-grid").addEventListener("click", () => { viewMode = "grid"; localStorage.setItem("viewMode", "grid"); renderDecide(); });
   $("#vm-list").addEventListener("click", () => { viewMode = "list"; localStorage.setItem("viewMode", "list"); renderDecide(); });
+  $("#sel-all")?.addEventListener("click", () => {
+    const pool2 = currentPool();
+    const allOn = pool2.length && pool2.every((r) => selected.has(r.id));
+    pool2.forEach((r) => allOn ? selected.delete(r.id) : selected.add(r.id));
+    fillBody();
+  });
 }
 
 function decideEmpty(s) {
@@ -504,33 +575,42 @@ function firstRun() {
   return el;
 }
 
-function priceBannerHtml(s) {
-  if (localStorage.getItem("banner-dismissed") === rows.length + "") return "";
-  const est = rows.filter((r) => r.bucket === "pkmn" && !r.keep && r.price >= 10 && !r.psa10_real).length;
-  if (est <= 25) return "";
-  return `<div class="banner">${ico("i-refresh")}<span>${est} Pokemon cards still have estimated prices.</span>
-    <span class="bx"><button class="ghost" onclick="document.getElementById('prices-btn').click()">Refresh real prices</button>
-    <button class="ghost" onclick="localStorage.setItem('banner-dismissed','${rows.length}');this.closest('.banner').remove()" aria-label="Dismiss">${ico("i-x", "s")}</button></span></div>`;
-}
-
-// Desktop table
+// Desktop table. Fixed layout with explicit column widths so the File buttons
+// stay at the same x across searches/re-renders — rapid filing needs a fixed
+// target, not columns that re-flow with content. Card gets the remainder.
 const TCOLS = [
-  ["", null], ["Card", null], ["Cond", null], ["Qty", "num"], ["Mkt", "num", "market"],
-  ["Net", "num", "value"], ["Net %", "num", "netpct"], ["Route", null], ["PSA 10", "num"], ["×", "num", "psa10x"], ["File", null],
+  ["sel", null, null, 36], ["", null, null, 44], ["Card", null, null, 0], ["Cond", null, null, 60],
+  ["Qty", "num", null, 48], ["Mkt", "num", "market", 88], ["Net", "num", "value", 80],
+  ["Net %", "num", "netpct", 64], ["Route", null, null, 112], ["PSA 10", "num", null, 88],
+  ["×", "num", "psa10x", 52], ["File", null, null, 186],
 ];
 function renderTable(pool) {
   const w = document.createElement("div");
   w.className = "tablew";
   const t = document.createElement("table");
-  t.className = "positions";
-  t.innerHTML = `<thead><tr>${TCOLS.map(([label, cls, sk]) =>
-    `<th class="${cls || ""}" ${sk ? `data-sort="${sk}"` : ""}>${label}${sk === sortKey ? ' <span class="arrow">▼</span>' : ""}</th>`).join("")}</tr></thead><tbody></tbody>`;
+  t.className = "positions fixedcols";
+  const poolIds = new Set(pool.map((r) => r.id));
+  const allSel = pool.length > 0 && pool.every((r) => selected.has(r.id));
+  t.innerHTML = `<colgroup>${TCOLS.map(([, , , wpx]) => wpx ? `<col style="width:${wpx}px">` : "<col>").join("")}</colgroup>
+    <thead><tr>${TCOLS.map(([label, cls, sk]) =>
+    label === "sel"
+      ? `<th><input type="checkbox" id="sel-all-t" ${allSel ? "checked" : ""} aria-label="Select all in this view"></th>`
+      : `<th class="${cls || ""}" ${sk ? `data-sort="${sk}"` : ""}>${label}${sk === sortKey ? ' <span class="arrow">▼</span>' : ""}</th>`).join("")}</tr></thead><tbody></tbody>`;
+  t.querySelector("#sel-all-t").addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const on = ev.currentTarget.checked;
+    pool.forEach((r) => on ? selected.add(r.id) : selected.delete(r.id));
+    document.querySelectorAll(".selbox").forEach((cb) => { cb.checked = on && poolIds.has(+cb.dataset.id); });
+    updateBatchBar();
+  });
   const tb = t.querySelector("tbody");
   pool.forEach((r, i) => {
     const tr = document.createElement("tr");
     const ctx = { pool, i };
     if (i === kfocus) tr.classList.add("kfocus");
+    const showPsa = psaEligible(r);
     tr.innerHTML = `
+      <td><input type="checkbox" class="selbox" data-id="${r.id}" ${selected.has(r.id) ? "checked" : ""} aria-label="Select ${esc(r.name)}"></td>
       <td>${r.image_url ? `<img class="th" loading="lazy" src="${r.image_url}" alt="">` : ""}</td>
       <td><div class="cell-name">${esc(r.name)}</div><div class="cell-sub">${subLine(r)}</div></td>
       <td>${r.condition && r.condition !== "NM" ? `<span class="fl" style="border-color:var(--amber);color:var(--amber);font-size:11px;border:1px solid;border-radius:4px;padding:0 5px">${r.condition}</span>` : ""}</td>
@@ -539,10 +619,15 @@ function renderTable(pool) {
       <td class="num net">${money(r.net_unit || 0)}</td>
       <td class="num dim">${Math.round((r.net_pct || 0) * 100)}%</td>
       <td><span class="route">${esc((r.channel || "").replace(" (", " ").replace(")", ""))}</span></td>
-      <td class="num">${r.psa10 ? (r.psa10_real ? "" : "~") + money(r.psa10) : ""}</td>
-      <td class="num ${r.psa10_x >= 8 ? "x-hot" : "dim"}">${r.psa10_x ? r.psa10_x + "×" : ""}</td>
+      <td class="num">${showPsa && r.psa10 ? (r.psa10_real ? "" : "~") + money(r.psa10) : ""}</td>
+      <td class="num ${showPsa && r.psa10_x >= 8 ? "x-hot" : "dim"}">${showPsa && r.psa10_x ? r.psa10_x + "×" : ""}</td>
       <td><div class="filecell">${DECISIONS.map((d) => `<button data-file="${d.key}" aria-label="${d.aria}" title="${d.aria}">${ico(d.icon, "s")}</button>`).join("")}</div></td>`;
     tr.addEventListener("click", () => openCard(r, ctx));
+    tr.querySelector(".selbox").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      ev.currentTarget.checked ? selected.add(r.id) : selected.delete(r.id);
+      updateBatchBar();
+    });
     wireFileButtons(tr, r);
     tb.appendChild(tr);
   });
@@ -745,7 +830,7 @@ function openCard(r, ctx = null) {
   const panel = $("#modal-panel");
   const chReason = r.channel ? `Best route: ${r.channel.replace(" (", " ").replace(")", "")} — ${esc(r.channel_reason || "")}` : "";
   const psaHot = (r.psa10_x || 0) >= 8;
-  const psa = r.bucket === "pkmn" && r.psa10
+  const psa = r.bucket === "pkmn" && r.psa10 && psaEligible(r)
     ? `<div class="m-line ${psaHot ? "hot" : ""} num">PSA 10 pays ${r.psa10_real ? "" : "~"}${money(r.psa10)} — ${r.psa10_x}× raw${r.psa10_real ? "" : " (class estimate — run Refresh real prices)"}.${psaHot ? " Don't sell this one raw." : ""}</div>` : "";
   const cur = decisionOf(r);
   const navHtml = ctx ? `<div class="m-nav">
