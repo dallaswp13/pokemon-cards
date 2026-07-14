@@ -284,6 +284,19 @@ main.app { max-width: 1240px; margin: 0 auto; padding: 16px 32px 64px; }
 .fchip .fc { font-size: 10px; color: var(--text-3); }
 .fchip.clear { border-color: transparent; color: var(--text-3); }
 .fchip.clear:hover { color: var(--danger); }
+/* Rarity row is a quieter, borderless treatment — less of an eyesore. */
+.filter-bar.rar { gap: 4px; }
+.filter-bar.rar .fchip { border-color: transparent; background: transparent; color: var(--text-3); height: 26px; padding: 0 8px; }
+.filter-bar.rar .fchip:hover { color: var(--text-2); background: var(--surface); }
+.filter-bar.rar .fchip.active { color: var(--accent); background: var(--selected-bg); border-color: transparent; }
+/* decide-row divider between primary (sell/keep) and flags (check/grade) */
+.dr-sep { width: 1px; align-self: stretch; background: var(--border); margin: 6px 2px; }
+/* Prep channel segmented control (compact) */
+.ch-seg button { height: 30px; padding: 0 9px; font-size: 11px; }
+.ch-seg button.active { background: var(--accent); color: #fff; }
+/* Transient import/refresh status in the (otherwise empty) next-up slot */
+.op-status { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; font-size: 13px; color: var(--text-2); margin-bottom: 4px; }
 @media (max-width: 719px) {
   .filter-bar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
     scrollbar-width: none; padding-bottom: 2px; }
