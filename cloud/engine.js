@@ -449,9 +449,20 @@ export function tcgpCondition(category, variance, cond) {
 }
 
 // ── Full import: CSV text → cloud card rows ─────────────────────────────────
+const KNOWN_CATS = new Set(["Pokemon", "Magic: The Gathering", "YuGiOh", "One Piece"]);
+
 export async function buildRows(csvText, existingByKey, onProgress) {
   const raw = parseCSV(csvText);
-  const mkCol = Object.keys(raw[0] || {}).find((k) => k.startsWith("Market Price"));
+  const cols = Object.keys(raw[0] || {});
+  const mkCol = cols.find((k) => k.startsWith("Market Price"));
+  // Guard: only a genuine Collectr export may proceed. A wrong file (e.g. a
+  // TCGplayer pricing export) previously parsed into sealed rows and triggered
+  // the destructive replace — refuse it here so the caller never deletes.
+  if (!cols.includes("Category") || !cols.includes("Product Name") || !mkCol) {
+    const bad = [];
+    bad.meta = { notCollectr: true, cols };
+    return bad;
+  }
   const out = [], seen = new Set();
   let skipped = 0, skippedValue = 0;
   await loadSets();     // one fetch each, cached — images resolve synchronously after
@@ -479,7 +490,9 @@ export async function buildRows(csvText, existingByKey, onProgress) {
     const keep = !!prev.keep;
     const effective = Math.round(market * (COND_FACTORS[condition] || 1) * 100) / 100;
 
-    // Bucketing (mirrors the local server)
+    // Bucketing (mirrors the local server). Unknown category is skipped BEFORE
+    // graded/sealed so a stray non-Collectr row can't masquerade as a hold.
+    if (!KNOWN_CATS.has(category)) { skipped++; skippedValue += market * qty; continue; }
     let bucket = null, xflags = [];
     const isGraded = grade && grade !== "Ungraded";
     const isSealed = SEALED_RE.test(name) || SEALED_BRACKET_RE.test(name);
