@@ -1158,7 +1158,14 @@ async function importCsv(file) {
       if (!data || data.length < 1000) break;
     }
     const cards = await buildRows(text, existing, setStatus);
-    if (!cards.length) { setStatus("No cards found — is this a Collectr export.csv?"); return; }
+    // Refuse a wrong file BEFORE touching the inventory. A non-Collectr CSV
+    // (e.g. a TCGplayer pricing export) once wiped everything — never again.
+    if (cards.meta?.notCollectr) {
+      setStatus("");
+      toast("That doesn't look like a Collectr export — needs Category, Product Name, and Market Price columns. Your inventory is untouched. (TCGplayer pricing files go under Data → TCGplayer catalog.)", null, 9000);
+      return;
+    }
+    if (!cards.length) { setStatus("No cards found — is this a Collectr export.csv? Your inventory is untouched."); return; }
     cards.forEach((c) => {
       c.user_id = user.id;
       const prev = existing[c.natural_key];
