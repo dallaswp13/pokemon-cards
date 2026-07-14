@@ -3,7 +3,7 @@
    quick-actions on every card, exports living inside their Cash Out lanes.
    Vanilla JS + Supabase. ?demo=1 loads a sample collection with no writes. */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl, jpFallbackUrl, sealedImageUrl, routeRow } from "./engine.js";
+import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl, jpFallbackUrl, sealedImageUrl, routeRow, gradingBreakdown } from "./engine.js";
 
 const SUPABASE_URL = "https://xmcohwtftpmnanootpia.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY29od3RmdHBtbmFub290cGlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODU5NTcsImV4cCI6MjA5OTI2MTk1N30.YVOa8JBdaJH9aXXsyUjOhdwKiohj4SZ6rVia36KfP0k";
@@ -23,11 +23,11 @@ const catOf = (b) => ({ pkmn: "Pokemon", mtg: "Magic: The Gathering", ygo: "YuGi
 function derivePricePatch(r, { market = r.market_price, condition = r.condition } = {}) {
   const mkt = +market || 0;
   const price = Math.round(mkt * (COND_FACTORS[condition] || 1) * 100) / 100;
-  const route = routeRow(catOf(r.bucket), r.set_name, r.rarity || "", r.name, r.variance, r.number, price);
+  // Feed the real PSA-10 comp into routing so grade EV/gap use it, not a prior.
+  const realPsa10 = r.psa10_real ? (+r.psa10 || 0) : 0;
+  const route = routeRow(catOf(r.bucket), r.set_name, r.rarity || "", r.name, r.variance, r.number, price, realPsa10);
   const keepFlags = (r.flags || []).filter((f) => f === "japanese" || f === "art-card");
-  const patch = { condition, market_price: mkt, price, ...route, flags: [...route.flags, ...keepFlags] };
-  if (r.psa10_real) { patch.psa10 = r.psa10; patch.psa10_x = price ? Math.round((r.psa10 / price) * 10) / 10 : 0; }
-  return patch;
+  return { condition, market_price: mkt, price, ...route, flags: [...route.flags, ...keepFlags] };
 }
 const GAMES = [["pkmn", "Pokemon"], ["mtg", "MTG"], ["ygo", "Yu-Gi-Oh"], ["op", "One Piece"]];
 const DECISIONS = [
@@ -42,7 +42,7 @@ const DKEY_TAG = { sell: "sell", grade: "to-grade", shop: "shop", check: "not-nm
 // is the working queue; the rest are where filed cards live (incl. Keep).
 const PILES = [
   ["all", "All"], ["undecided", "Undecided"], ["sell", "Sell"], ["keep", "Keep"], ["grade", "Grade"],
-  ["shop", "Shop"], ["check", "Check"], ["graded", "Graded"], ["sealed", "Sealed"],
+  ["shop", "Shop"], ["check", "Check"], ["graded", "Graded"], ["sealed", "Sealed"], ["under1", "<$1"],
 ];
 
 let rows = [];
@@ -70,6 +70,14 @@ const offC = (r) => hasTag(r, "off-center");
 // A damaged or off-center card is not gem-mint material — showing a PSA-10
 // payday on it is a lie the user asked us to stop telling.
 const psaEligible = (r) => (r.condition || "NM") === "NM" && !offC(r);
+const gradeClassLabel = (c) => ({ vintage: "vintage holos", modern_textured: "textured / alt-art holos", modern_smooth: "modern holos" }[c] || "this type");
+// "PSA 10.0 GEM - MT" → "PSA 10"; "" if ungraded.
+function gradeNum(r) {
+  if (!r.grade || r.grade === "Ungraded") return "";
+  const co = (r.grade.match(/\b(PSA|BGS|CGC|SGC)\b/i) || ["PSA"])[0].toUpperCase();
+  const n = (r.grade.match(/(\d+(?:\.\d)?)/) || [])[1];
+  return n ? `${co} ${parseFloat(n)}` : co;
+}
 const isRaw = (b) => ["pkmn", "mtg", "ygo", "op"].includes(b);
 const decisionOf = (r) => r.keep ? "keep" : hasTag(r, "sell") ? "sell" : hasTag(r, "to-grade") ? "grade" : hasTag(r, "shop") ? "shop" : hasTag(r, "not-nm") ? "check" : null;
 const decided = (r) => decisionOf(r) !== null;
@@ -82,11 +90,15 @@ const SORTS = {
 };
 
 // Rows visible in a pile (before game chip / facet filters).
+// Sub-$1 raw cards are bulk you don't want to hand-decide, so they live in the
+// "<$1" pile and are kept OUT of Undecided (they don't inflate the queue).
+const isBulk = (r) => isRaw(r.bucket) && (r.price || 0) < 1;
 function pileRows(key) {
   if (key === "all") return rows;
   if (key === "graded" || key === "sealed") return rows.filter((r) => r.bucket === key);
   const raw = rows.filter((r) => isRaw(r.bucket));
-  if (key === "undecided") return raw.filter((r) => !decided(r));
+  if (key === "under1") return raw.filter((r) => (r.price || 0) < 1);
+  if (key === "undecided") return raw.filter((r) => !decided(r) && (r.price || 0) >= 1);
   const map = { sell: "sell", grade: "to-grade", shop: "shop", check: "not-nm" };
   if (key === "keep") return raw.filter((r) => r.keep);
   return raw.filter((r) => hasTag(r, map[key]));
@@ -223,7 +235,7 @@ function updateBatchBar() {
 // ── Next-Up ladder ───────────────────────────────────────────────────────────
 function stats() {
   const raw = rows.filter((r) => isRaw(r.bucket));
-  const undecided = raw.filter((r) => !decided(r));
+  const undecided = raw.filter((r) => !decided(r) && (r.price || 0) >= 1);   // bulk lives in the <$1 pile
   const sellRows = raw.filter((r) => hasTag(r, "sell"));
   const checkRows = raw.filter((r) => hasTag(r, "not-nm"));
   const photosNeeded = sellRows.filter((r) => r.channel && r.channel.startsWith("eBay") && (r.photos || []).length < 2);
@@ -389,7 +401,9 @@ function tile(r, showPile = false, ctx = null) {
   el.className = "tile";
   const cond = r.condition && r.condition !== "NM" ? `<span class="cond">${r.condition}</span>` : "";
   const fl = [];
-  if (r.grade_flag && psaEligible(r)) fl.push(`<span class="fl amber">Grade +${money(r.grade_gap || 0)}</span>`);
+  const tgb = r.bucket === "pkmn" && psaEligible(r) && (r.price || 0) >= 20
+    ? gradingBreakdown(r.card_class, r.net_unit || 0, +r.psa10 || 0, r.psa10_real) : null;
+  if (tgb && tgb.worth) fl.push(`<span class="fl amber" title="Grading likely beats selling raw — open the card for the breakdown">Grade?</span>`);
   if ((r.flags || []).includes("japanese")) fl.push(`<span class="fl">JP</span>`);
   if ((r.flags || []).some((f) => String(f).startsWith("ebay-authenticity"))) fl.push(`<span class="fl">$250+ auth</span>`);
   const pile = decisionOf(r);
@@ -412,14 +426,17 @@ function tile(r, showPile = false, ctx = null) {
 function listRow(r, ctx = null) {
   const el = document.createElement("div");
   el.className = "rowc";
+  const raw = isRaw(r.bucket);
+  const g = gradeNum(r);
   el.innerHTML = `
-    <input type="checkbox" class="selbox" data-id="${r.id}" ${selected.has(r.id) ? "checked" : ""} aria-label="Select ${esc(r.name)}">
+    ${raw ? `<input type="checkbox" class="selbox" data-id="${r.id}" ${selected.has(r.id) ? "checked" : ""} aria-label="Select ${esc(r.name)}">` : ""}
     ${imgTag(r)}
     <div class="r-main"><div class="r-name">${esc(r.name)}</div><div class="r-sub">${subLine(r)}</div></div>
+    ${g ? `<span class="grade-pill num">${g}</span>` : ""}
     <div class="r-price num">${money2(r.price)}${(r.qty || 1) > 1 ? ` <span class="dim">×${r.qty}</span>` : ""}</div>
-    ${decideRow(r, true)}`;
+    ${raw ? decideRow(r, true) : ""}`;
   el.addEventListener("click", () => openCard(r, ctx));
-  el.querySelector(".selbox").addEventListener("click", (ev) => {
+  el.querySelector(".selbox")?.addEventListener("click", (ev) => {
     ev.stopPropagation();
     ev.currentTarget.checked ? selected.add(r.id) : selected.delete(r.id);
     updateBatchBar();
@@ -651,7 +668,7 @@ function renderTable(pool) {
       <td><input type="checkbox" class="selbox" data-id="${r.id}" ${selected.has(r.id) ? "checked" : ""} aria-label="Select ${esc(r.name)}"></td>
       <td>${r.image_url ? `<img class="th" loading="lazy" src="${r.image_url}" alt="">` : ""}</td>
       <td><div class="cell-name">${esc(r.name)}</div><div class="cell-sub">${subLine(r)}</div></td>
-      <td>${r.condition && r.condition !== "NM" ? `<span class="fl" style="border-color:var(--amber);color:var(--amber);font-size:11px;border:1px solid;border-radius:4px;padding:0 5px">${r.condition}</span>` : ""}</td>
+      <td>${gradeNum(r) ? `<span class="grade-pill num">${gradeNum(r)}</span>` : r.condition && r.condition !== "NM" ? `<span class="fl" style="border-color:var(--amber);color:var(--amber);font-size:11px;border:1px solid;border-radius:4px;padding:0 5px">${r.condition}</span>` : ""}</td>
       <td class="num dim">${(r.qty || 1) > 1 ? "×" + r.qty : ""}</td>
       <td class="num">${money2(r.market_price || r.price)}</td>
       <td class="num net">${money(r.net_unit || 0)}</td>
@@ -871,6 +888,18 @@ function openCard(r, ctx = null) {
   const psaHot = (r.psa10_x || 0) >= 8;
   const psa = r.bucket === "pkmn" && r.psa10 && psaEligible(r)
     ? `<div class="m-line ${psaHot ? "hot" : ""} num">PSA 10 pays ${r.psa10_real ? "" : "~"}${money(r.psa10)} — ${r.psa10_x}× raw${r.psa10_real ? "" : " (class estimate — run Refresh real prices)"}.${psaHot ? " Don't sell this one raw." : ""}</div>` : "";
+  // Grading breakdown — spells out the math the "Grade?" flag alludes to,
+  // and is honest about what's a real comp vs a rough gem-rate assumption.
+  const gb = r.bucket === "pkmn" && psaEligible(r) && (r.price || 0) >= 20 ? gradingBreakdown(r.card_class, r.net_unit || 0, +r.psa10 || 0, r.psa10_real) : null;
+  const gradeHtml = gb ? `
+        <div class="m-seclbl">Should you grade it?</div>
+        <div class="grade-box">
+          <div class="gb-row"><span>Sell raw now</span><b class="num">${money(r.net_unit || 0)} net</b></div>
+          <div class="gb-row"><span>If it grades PSA 10${gb.real ? "" : " (est.)"}</span><b class="num">${money(gb.psa10Net)} net</b></div>
+          <div class="gb-row"><span>Grading cost (${esc(gb.tier)} + ship)</span><b class="num">-${money(gb.gradeCost)}</b></div>
+          <div class="gb-row hl"><span>Profit if it 10s</span><b class="num ${gb.ifTenProfit > 0 ? "pos" : "neg"}">${gb.ifTenProfit >= 0 ? "+" : ""}${money(gb.ifTenProfit)}</b></div>
+          <div class="gb-note">Worth it if this card grades a 10 more than <b class="num">~${gb.breakEvenPct ?? "—"}%</b> of the time. Typical PSA-10 rate for ${esc(gradeClassLabel(r.card_class))}: <b class="num">~${gb.gemRatePct}%</b> — but centering and print lines on <em>this</em> copy decide it. ${gb.real ? "PSA-10 price is a real sold comp." : "PSA-10 price is a class estimate — run Refresh real prices for a real comp."}</div>
+        </div>` : "";
   const cur = decisionOf(r);
   const navHtml = ctx ? `<div class="m-nav">
       <button class="ghost" id="m-prev" ${ctx.i <= 0 ? "disabled" : ""} aria-label="Previous card">‹</button>
@@ -890,6 +919,7 @@ function openCard(r, ctx = null) {
         ${psa}
         ${isRaw(r.bucket) ? `<div class="m-line num">Shop offer: <span class="net">${money(r.shop_trade || 0)}</span> trade / ${money(r.shop_cash || 0)} cash</div>` : ""}
         <div id="m-trend"></div>
+        ${gradeHtml}
 
         ${isRaw(r.bucket) ? `
         <div class="m-seclbl">Condition</div>
@@ -985,17 +1015,41 @@ async function deletePhoto(r, side) {
   openCard(r, modalCtx); renderAll();
 }
 
+// Value over time — peak high/low, current-vs-peak, and trend — from the
+// price_history snapshots taken on every import and price refresh. Shows a
+// tracking note until there are ≥2 points so it never renders empty/misleading.
 async function trendHtml(r) {
+  if (!isRaw(r.bucket)) return "";
   const { data } = await sb.from("price_history").select("price,ts")
-    .eq("natural_key", r.natural_key).order("ts", { ascending: true }).limit(100);
-  if (!data || data.length < 2) return "";
-  const first = data[0], last = data[data.length - 1];
-  const days = (new Date(last.ts) - new Date(first.ts)) / 864e5;
-  if (days < 1 || !+first.price) return "";
-  const chg = (last.price - first.price) / first.price;
+    .eq("natural_key", r.natural_key).order("ts", { ascending: true }).limit(400);
+  const pts = (data || []).map((d) => ({ p: +d.price || 0, t: new Date(d.ts) })).filter((d) => d.p > 0);
+  if (pts.length < 2) {
+    return `<div class="m-seclbl">Value over time</div>
+      <div class="m-line dim" style="margin-top:-2px">Tracking — one data point so far. Each import and price refresh adds a snapshot; check back to see the trend.</div>`;
+  }
+  const prices = pts.map((d) => d.p);
+  const hi = Math.max(...prices), lo = Math.min(...prices);
+  const hiPt = pts.find((d) => d.p === hi), loPt = pts.find((d) => d.p === lo);
+  const first = pts[0], last = pts[pts.length - 1];
+  const days = Math.max(1, Math.round((last.t - first.t) / 864e5));
+  const chg = first.p ? (last.p - first.p) / first.p : 0;
+  const fromPeak = hi ? Math.round((last.p / hi - 1) * 100) : 0;
   const icon = chg > 0.03 ? "i-trend-up" : chg < -0.03 ? "i-trend-down" : "i-list";
-  const word = chg > 0.03 ? "Rising" : chg < -0.03 ? "Falling" : "Flat";
-  return `<div class="m-line num" style="display:flex;align-items:center;gap:6px">${ico(icon, "s")} ${word} ${(chg * 100).toFixed(0)}% over ${Math.round(days)}d <span class="dim">(${data.length} snapshots)</span></div>`;
+  const word = chg > 0.03 ? "Trending up" : chg < -0.03 ? "Trending down" : "Flat";
+  const cls = chg > 0.03 ? "pos" : chg < -0.03 ? "neg" : "dim";
+  const dt = (d) => d.t.toISOString().slice(0, 10);
+  return `<div class="m-seclbl">Value over time</div>
+    <div class="trend-box">
+      <div class="trend-hd"><span class="${cls}" style="display:inline-flex;align-items:center;gap:5px">${ico(icon, "s")} ${word} ${chg >= 0 ? "+" : ""}${(chg * 100).toFixed(0)}%</span>
+        <span class="dim num">over ${days}d · ${pts.length} snapshots</span></div>
+      <div class="trend-grid num">
+        <div><span class="dim">Peak high</span><b>${money2(hi)}</b><span class="dim">${dt(hiPt)}</span></div>
+        <div><span class="dim">Peak low</span><b>${money2(lo)}</b><span class="dim">${dt(loPt)}</span></div>
+        <div><span class="dim">Now</span><b>${money2(last.p)}</b><span class="${fromPeak < -1 ? "neg" : "dim"}">${fromPeak <= 0 ? "" : "+"}${fromPeak}% vs peak</span></div>
+      </div>
+      ${fromPeak <= -10 ? `<div class="gb-note">Down ${Math.abs(fromPeak)}% from its peak — if you're selling, sooner beats later while it's still soft.</div>`
+        : chg > 0.1 ? `<div class="gb-note">Climbing — you may have room to wait, but peaks are hard to time.</div>` : ""}
+    </div>`;
 }
 
 // ── eBay listing text ────────────────────────────────────────────────────────
@@ -1145,6 +1199,10 @@ async function importCsv(file) {
       const ins = await sb.from("cards").insert(cards.slice(i, i + 500));
       if (ins.error) { setStatus("Import failed: " + ins.error.message); return; }
     }
+    // Snapshot prices so value-over-time has data points (raw singles ≥ $1).
+    const snap = cards.filter((c) => isRaw(c.bucket) && (c.market_price || 0) >= 1)
+      .map((c) => ({ natural_key: c.natural_key, price: c.market_price, psa10: c.psa10 || 0 }));
+    for (let i = 0; i < snap.length; i += 500) await sb.from("price_history").insert(snap.slice(i, i + 500));
     const skipV = cards.meta?.skippedValue || 0;
     toast(`Imported ${cards.length} cards${skipV >= 1 ? ` · left out ${money(skipV)} of tokens/misc (not sellable as singles)` : ""}`, null, 6000);
     load();

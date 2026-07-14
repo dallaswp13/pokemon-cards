@@ -146,6 +146,25 @@ main.app { max-width: 1240px; margin: 0 auto; padding: 16px 32px 64px; }
 .pchip.zero { opacity: 0.45; }
 .pchip.zero.active { opacity: 1; }
 
+/* Grade number pill (graded pile, list/table) */
+.grade-pill { font-size: 11px; font-weight: 700; border: 1px solid var(--amber); color: var(--amber);
+  border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+
+/* Card-panel: grading breakdown + value-over-time */
+.grade-box, .trend-box { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-top: 4px; background: var(--surface); }
+.gb-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; padding: 3px 0; }
+.gb-row span { color: var(--text-2); }
+.gb-row.hl { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 7px; font-weight: 600; }
+.gb-row .pos, .trend-box .pos { color: var(--money); }
+.gb-row .neg, .trend-box .neg { color: var(--danger); }
+.gb-note { font-size: 12px; color: var(--text-2); margin-top: 8px; line-height: 1.45; }
+.gb-note b { color: var(--text); }
+.trend-hd { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.trend-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.trend-grid > div { display: flex; flex-direction: column; gap: 1px; }
+.trend-grid b { font-size: 15px; }
+.trend-grid .dim, .trend-grid .neg { font-size: 11px; }
+
 /* Always-visible multi-select facet bar */
 .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
 .filter-bar.rar { margin-bottom: 12px; }
