@@ -55,6 +55,7 @@ let pileKey = "undecided";
 let gameChip = localStorage.getItem("gameChip") || "";
 let viewMode = localStorage.getItem("viewMode") || "grid";
 let sortKey = "value";
+let rarOpen = localStorage.getItem("rarOpen") === "1";   // rarity filter row expanded?
 // Multi-select facets: within a facet any selected value passes (OR); facets
 // combine with AND — "illustration rares under $1" = rarity ∪ price band.
 const filters = { search: "", price: new Set(), route: new Set(), rarity: new Set(), grade: false, oc: false, photo: false };
@@ -517,7 +518,9 @@ function renderDecide() {
         ? `<button class="fchip clear" id="f-clear">${ico("i-x", "s")} Clear</button>` : ""}
     </div>
     ${rarities.length ? `<div class="filter-bar rar">
-      <span class="fgroup">Rarity</span>${rarities.map(([k]) => fchip("rarity", k, esc(k))).join("")}
+      <button class="fgroup rar-toggle" id="rar-toggle">Rarity <span class="caret">${rarOpen ? "▾" : "▸"}</span></button>
+      ${(rarOpen ? rarities.map(([k]) => k) : [...filters.rarity]).map((k) => fchip("rarity", k, esc(k))).join("")}
+      ${!rarOpen && !filters.rarity.size ? `<span class="dim" style="font-size:12px">${rarities.length} types — click to filter</span>` : ""}
     </div>` : rarityMissing ? `<div class="filter-bar rar">
       <span class="fgroup">Rarity</span><span class="dim" style="font-size:12px">Re-import your export (Data → Import) to filter by rarity.</span>
     </div>` : ""}` : ""}
@@ -556,6 +559,7 @@ function renderDecide() {
     filters.grade = false; filters.oc = false; filters.photo = false;
     renderDecide();
   });
+  $("#rar-toggle")?.addEventListener("click", () => { rarOpen = !rarOpen; localStorage.setItem("rarOpen", rarOpen ? "1" : "0"); renderDecide(); });
   $("#q").addEventListener("input", (e) => { filters.search = e.target.value.trim(); fillBody(); });
   $("#sortsel").addEventListener("change", (e) => { sortKey = e.target.value; fillBody(); });
   $("#vm-grid").addEventListener("click", () => { viewMode = "grid"; localStorage.setItem("viewMode", "grid"); renderDecide(); });
