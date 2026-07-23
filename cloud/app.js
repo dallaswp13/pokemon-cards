@@ -3,7 +3,7 @@
    quick-actions on every card, exports living inside their Cash Out lanes.
    Vanilla JS + Supabase. ?demo=1 loads a sample collection with no writes. */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl, jpFallbackUrl, sealedImageUrl, routeRow, gradingBreakdown } from "./engine.js";
+import { buildRows, parseCSV, normSetTCGP, normNumTCGP, TCGP_SET_ALIASES, tcgpCondition, mtgFuzzyImageUrl, jpFallbackUrl, sealedImageUrl, routeRow, gradingBreakdown, ebayNet } from "./engine.js";
 
 const SUPABASE_URL = "https://xmcohwtftpmnanootpia.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY29od3RmdHBtbmFub290cGlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODU5NTcsImV4cCI6MjA5OTI2MTk1N30.YVOa8JBdaJH9aXXsyUjOhdwKiohj4SZ6rVia36KfP0k";
@@ -60,6 +60,7 @@ let rarOpen = localStorage.getItem("rarOpen") === "1";   // rarity filter row ex
 // comps each bid against PriceCharting, flags below-market. Loaded on demand.
 let radarUI = { minutes: +localStorage.getItem("radarMin") || 30, dealsOnly: localStorage.getItem("radarDeals") === "1", loading: false, scanning: false, data: null, err: null, ts: 0 };
 let radarTimer = null;   // 1s countdown ticker, live only while the Radar view is shown
+const RADAR_MARGIN = 0.30;   // target flip profit: max bid leaves this cushion after eBay resale fees
 // Multi-select facets: within a facet any selected value passes (OR); facets
 // combine with AND — "illustration rares under $1" = rarity ∪ price band.
 const filters = { search: "", price: new Set(), route: new Set(), rarity: new Set(), grade: false, oc: false, photo: false };
@@ -925,13 +926,29 @@ function radarRow(r) {
   const bids = r.bids != null ? ` · ${r.bids} bid${r.bids === 1 ? "" : "s"}` : "";
   const pc = comped && r.product ? ` · ${esc(r.product)}` : "";
   const mkt = !comped ? "" : `<span class="rd-mkt num dim">mkt ${r.market ? money(r.market) : "—"}</span>`;
-  return `<a class="radar-row ${r.deal ? "deal" : ""}" href="${esc(r.url)}" target="_blank" rel="noopener">
+  const img = r.img ? `<img class="rd-img" src="${esc(r.img)}" alt="" loading="lazy">` : `<span class="rd-img noimg">${ico("i-grid", "s")}</span>`;
+  // Snipe: highest bid that still nets ~RADAR_MARGIN profit after eBay resale fees (portal ebayNet),
+  // net of this listing's inbound shipping. Links to Gixen with the eBay item id prefilled.
+  let snipe = "";
+  if (r.deal && r.market) {
+    const eff = (r.curBid ?? 0) + (r.ship ?? 0);
+    const maxBid = Math.max(0, Math.floor(ebayNet(r.market) * (1 - RADAR_MARGIN) - (r.ship || 0)));
+    const noRoom = maxBid <= eff;   // current bid already at/above a profitable max — not worth sniping
+    const id = (String(r.url).match(/\/itm\/(\d+)/) || [])[1];
+    const gx = id ? `https://www.gixen.com/main.php?itemid=${id}` : "https://www.gixen.com/";
+    const tip = noRoom
+      ? `Current bid is already at/above a profitable max (${money(maxBid)}) — skip`
+      : `Snipe on Gixen — set your max bid to ${money(maxBid)} (leaves ~${Math.round(RADAR_MARGIN * 100)}% after fees)`;
+    snipe = `<a class="rd-snipe ${noRoom ? "cold" : ""}" href="${gx}" target="_blank" rel="noopener" title="${tip}">max ${money(maxBid)} ${ico("i-chev", "s")}</a>`;
+  }
+  return `<div class="radar-row ${r.deal ? "deal" : ""}">
     <span class="rd-eta num" data-end="${esc(r.endDate || "")}">${etaText(r.endDate)}</span>
-    ${r.img ? `<img class="rd-img" src="${esc(r.img)}" alt="" loading="lazy">` : `<span class="rd-img noimg">${ico("i-grid", "s")}</span>`}
-    <span class="rd-main"><span class="rd-title">${esc(r.title)}</span><span class="rd-meta dim">${esc(r.condition || "raw")}${cond}${tier}${bids}${pc}</span></span>
+    <a class="rd-imgl" href="${esc(r.url)}" target="_blank" rel="noopener">${img}</a>
+    <a class="rd-main" href="${esc(r.url)}" target="_blank" rel="noopener"><span class="rd-title">${esc(r.title)}</span><span class="rd-meta dim">${esc(r.condition || "raw")}${cond}${tier}${bids}${pc}</span></a>
     <span class="rd-nums"><span class="rd-bid num">${bid}</span>${mkt}</span>
     <span class="rd-under num ${underCls}">${underTxt}</span>
-  </a>`;
+    <span class="rd-act">${snipe}</span>
+  </div>`;
 }
 function renderRadarList() {
   const box = $("#radar-list"); if (!box) return;
@@ -986,7 +1003,7 @@ function renderRadar() {
   v.innerHTML = `
     <div class="radar-head">
       <div><h2>Ending-soon radar</h2>
-        <p class="dim">Live Pokémon auctions ending soon — hit Scan to price each current bid against PriceCharting (condition-adjusted). Green = bidding below market.</p></div>
+        <p class="dim">Live Pokémon auctions ending soon — hit Scan to price each current bid against PriceCharting (condition-adjusted). Green = below market; each deal shows a max bid for a ~${Math.round(RADAR_MARGIN * 100)}% flip margin → Gixen to snipe.</p></div>
       <div class="radar-ctrl">
         <div class="rd-wins">${segs}</div>
         <label class="rd-toggle"><input type="checkbox" id="rd-deals" ${radarUI.dealsOnly ? "checked" : ""}> Deals only</label>
