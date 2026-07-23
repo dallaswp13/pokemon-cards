@@ -56,6 +56,10 @@ let gameChip = localStorage.getItem("gameChip") || "";
 let viewMode = localStorage.getItem("viewMode") || "grid";
 let sortKey = "value";
 let rarOpen = localStorage.getItem("rarOpen") === "1";   // rarity filter row expanded?
+// eBay ending-soon radar (Radar station): pulls auctions ending within `minutes`,
+// comps each bid against PriceCharting, flags below-market. Loaded on demand.
+let radarUI = { minutes: +localStorage.getItem("radarMin") || 30, dealsOnly: localStorage.getItem("radarDeals") === "1", loading: false, scanning: false, data: null, err: null, ts: 0 };
+let radarTimer = null;   // 1s countdown ticker, live only while the Radar view is shown
 // Multi-select facets: within a facet any selected value passes (OR); facets
 // combine with AND — "illustration rares under $1" = rarity ∪ price band.
 const filters = { search: "", price: new Set(), route: new Set(), rarity: new Set(), grade: false, oc: false, photo: false };
@@ -298,7 +302,7 @@ function applyHash() {
     station = "decide";
     pileKey = ["graded", "sealed"].includes(sub) ? sub : "all";
   } else {
-    station = ["decide", "prep", "cashout"].includes(st) ? st : "decide";
+    station = ["decide", "prep", "cashout", "radar"].includes(st) ? st : "decide";
     if (station === "decide") pileKey = PILES.some(([k]) => k === sub) ? sub : "undecided";
   }
   localStorage.setItem("lastRoute", location.hash);
@@ -312,6 +316,7 @@ function renderStations() {
     ["decide", "Cards", "i-grid", `${s.undecided.length}`],
     ["prep", "Prep", "i-camera", `${prepCount}`],
     ["cashout", "Trade", "i-refresh", ""],
+    ["radar", "Radar", "i-search", radarUI.data && radarUI.data.didComp && radarUI.data.deals ? `${radarUI.data.deals}` : ""],
   ];
   $("#stations").innerHTML = defs.map(([key, label, icon, pill, isMoney]) =>
     `<button class="${key === station ? "active" : ""}" data-st="${key}">
@@ -324,11 +329,13 @@ function renderStations() {
 function renderAll() {
   renderStrip();
   renderStations();
-  ["decide", "prep", "cashout", "browse"].forEach((k) =>
+  ["decide", "prep", "cashout", "browse", "radar"].forEach((k) =>
     $(`#view-${k}`)?.classList.toggle("hidden", k !== station));
   if (station === "decide") renderDecide();
   else if (station === "prep") renderPrep();
   else if (station === "cashout") renderTrade();
+  else if (station === "radar") renderRadar();
+  if (station !== "radar" && radarTimer) { clearInterval(radarTimer); radarTimer = null; }
   if (station !== "decide") updateBatchBar();   // removes the bar off-station
 }
 
@@ -886,6 +893,118 @@ function renderTrade() {
     saveTrade(); renderTrade();
   });
   $("#trade-clear")?.addEventListener("click", () => { trade = { give: [], get: [] }; saveTrade(); renderTrade(); });
+}
+
+// ── Radar: eBay auctions ending soon, bidding below market ───────────────────
+function etaText(iso) {
+  if (!iso) return "—";
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return "ended";
+  const s = Math.floor(ms / 1000), m = Math.floor(s / 60);
+  if (m >= 60) return Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0");
+  return m + ":" + String(s % 60).padStart(2, "0");
+}
+function tickRadar() {
+  const now = Date.now();
+  document.querySelectorAll("#view-radar .rd-eta[data-end]").forEach((el) => {
+    const iso = el.dataset.end, ms = iso ? new Date(iso).getTime() - now : 0;
+    el.textContent = etaText(iso);
+    el.classList.toggle("urgent", ms > 0 && ms < 120000);
+    el.classList.toggle("ended", ms <= 0);
+  });
+}
+function radarRow(r) {
+  const comped = !!(radarUI.data && radarUI.data.didComp);
+  const under = r.deltaPct != null ? Math.round(r.deltaPct * 100) : null;
+  const underCls = under == null ? "dim" : under >= 25 ? "pos" : under >= 0 ? "amber" : "neg";
+  const underTxt = !comped ? "" : under == null ? (r.market ? "no match" : "no comp") : under >= 0 ? `${under}% under` : `${-under}% over`;
+  const bid = money2(r.curBid ?? 0) + (r.ship ? ` +${money2(r.ship)} ship` : "");
+  const tier = r.tier && r.tier !== "loose" ? `<span class="rd-tier">${r.tier.toUpperCase().replace("PSA", "PSA ")}</span>` : "";
+  // Surface the condition used for pricing (portal COND_FACTORS) when it discounts the comp.
+  const cond = r.tier === "loose" && r.cond && r.cond !== "NM" ? `<span class="rd-tier cond">${r.cond}</span>` : "";
+  const bids = r.bids != null ? ` · ${r.bids} bid${r.bids === 1 ? "" : "s"}` : "";
+  const pc = comped && r.product ? ` · ${esc(r.product)}` : "";
+  const mkt = !comped ? "" : `<span class="rd-mkt num dim">mkt ${r.market ? money(r.market) : "—"}</span>`;
+  return `<a class="radar-row ${r.deal ? "deal" : ""}" href="${esc(r.url)}" target="_blank" rel="noopener">
+    <span class="rd-eta num" data-end="${esc(r.endDate || "")}">${etaText(r.endDate)}</span>
+    ${r.img ? `<img class="rd-img" src="${esc(r.img)}" alt="" loading="lazy">` : `<span class="rd-img noimg">${ico("i-grid", "s")}</span>`}
+    <span class="rd-main"><span class="rd-title">${esc(r.title)}</span><span class="rd-meta dim">${esc(r.condition || "raw")}${cond}${tier}${bids}${pc}</span></span>
+    <span class="rd-nums"><span class="rd-bid num">${bid}</span>${mkt}</span>
+    <span class="rd-under num ${underCls}">${underTxt}</span>
+  </a>`;
+}
+function renderRadarList() {
+  const box = $("#radar-list"); if (!box) return;
+  const d = radarUI.data;
+  if (!d) { box.innerHTML = ""; return; }
+  let list = d.rows;
+  if (radarUI.dealsOnly && d.didComp) list = list.filter((r) => r.deal);   // deals filter only after pricing
+  if (!list.length) {
+    box.innerHTML = `<div class="radar-empty dim">${radarUI.dealsOnly && d.didComp ? "No under-market auctions in this window yet — widen the window or scan again." : "No auctions ending in this window."}</div>`;
+    return;
+  }
+  box.innerHTML = list.map(radarRow).join("");
+}
+// comp=false → just pull the ending-soon listings (fast). comp=true → also price
+// each against PriceCharting. Split so the list shows instantly, then Scan prices it.
+async function loadRadar(comp) {
+  if (radarUI.loading) return;
+  radarUI.loading = true; radarUI.scanning = !!comp; radarUI.err = null; renderRadar();
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    let j;
+    if (session) {
+      const r = await fetch(SUPABASE_URL + "/functions/v1/ebay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": "Bearer " + session.access_token },
+        body: JSON.stringify({ action: "radar", minutes: radarUI.minutes, comp: !!comp }),
+      });
+      j = await r.json();
+    } else {
+      // Not signed in (demo/preview): read-only endpoint, real eBay data, small cap.
+      const r = await fetch(SUPABASE_URL + "/functions/v1/ebay?radartest=" + Math.min(radarUI.minutes, 60) + (comp ? "&comp=1" : ""));
+      j = await r.json();
+    }
+    if (j.error) { radarUI.err = j.error; radarUI.data = null; }
+    else { radarUI.data = j; radarUI.ts = Date.now(); }
+  } catch (e) { radarUI.err = String((e && e.message) || e); }
+  radarUI.loading = false; radarUI.scanning = false;
+  renderRadar();
+  renderStations();   // refresh the Radar deal-count pill
+}
+function renderRadar() {
+  const v = $("#view-radar"); if (!v) return;
+  const d = radarUI.data;
+  const segs = [15, 30, 60].map((m) => `<button class="rd-seg ${radarUI.minutes === m ? "active" : ""}" data-min="${m}">${m}m</button>`).join("");
+  const updated = radarUI.ts ? new Date(radarUI.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const sub = radarUI.loading ? (radarUI.scanning ? "Pricing against PriceCharting…" : "Loading auctions…")
+    : radarUI.err ? `<span class="neg">${esc(radarUI.err)}</span>`
+    : d && d.didComp ? `${d.total} ending · ${d.comped} priced · <b class="pos">${d.deals} under market</b>${updated ? ` · updated ${updated}` : ""}`
+    : d ? `${d.total} ending — hit <b>Scan prices</b> to check each against market${updated ? ` · loaded ${updated}` : ""}`
+    : `Loading auctions ending in the next ${radarUI.minutes} minutes…`;
+  const scanLabel = radarUI.loading ? "Scanning…" : ico("i-refresh", "s") + (d && d.didComp ? " Rescan" : " Scan prices");
+  v.innerHTML = `
+    <div class="radar-head">
+      <div><h2>Ending-soon radar</h2>
+        <p class="dim">Live Pokémon auctions ending soon — hit Scan to price each current bid against PriceCharting (condition-adjusted). Green = bidding below market.</p></div>
+      <div class="radar-ctrl">
+        <div class="rd-wins">${segs}</div>
+        <label class="rd-toggle"><input type="checkbox" id="rd-deals" ${radarUI.dealsOnly ? "checked" : ""}> Deals only</label>
+        <button class="cta rd-scan" id="rd-scan" ${radarUI.loading ? "disabled" : ""}>${scanLabel}</button>
+      </div>
+    </div>
+    <div class="radar-sub">${sub}</div>
+    <div id="radar-list"></div>`;
+  v.querySelectorAll(".rd-seg").forEach((b) => b.addEventListener("click", () => {
+    radarUI.minutes = +b.dataset.min; localStorage.setItem("radarMin", radarUI.minutes); loadRadar(false);
+  }));
+  $("#rd-deals").addEventListener("change", (e) => {
+    radarUI.dealsOnly = e.target.checked; localStorage.setItem("radarDeals", radarUI.dealsOnly ? "1" : "0"); renderRadarList();
+  });
+  $("#rd-scan").addEventListener("click", () => loadRadar(true));
+  renderRadarList();
+  if (!radarTimer) radarTimer = setInterval(tickRadar, 1000);
+  if (!d && !radarUI.loading && !radarUI.err) loadRadar(false);   // pull listings on first open
 }
 
 function ledger(s) {
