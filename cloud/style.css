@@ -567,3 +567,4 @@ td .filecell button.on { background: color-mix(in srgb, var(--dc, var(--accent))
   .rd-nums { grid-area: nums; flex-direction: row; gap: 8px; text-align: left; }
   .rd-under { grid-area: under; }
 }
+.rd-tier.cond { color: var(--amber); border-color: rgba(245,185,68,0.4); }

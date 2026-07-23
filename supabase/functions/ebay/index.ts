@@ -87,16 +87,41 @@ function gradeTier(title: string, condition: string | null): "loose" | "psa9" | 
   return parseFloat(m[1]) >= 9.5 ? "psa10" : "psa9";
 }
 function stripTitle(t: string): string {
+  // Keep variant words (holo / reverse / shadowless / 1st edition / jumbo) in the query
+  // so PriceCharting returns the right variant; only strip grades and punctuation.
   return t
     .replace(/\b(psa|bgs|cgc|sgc|ace|beckett)\s*\.?\s*\d+(?:\.\d)?\b/gi, " ")
     .replace(/\bgem\s*mint\b/gi, " ")
-    .replace(/\b(1st|first)\s*ed(ition)?\b/gi, " ")
     .replace(/[^\w\s\/#-]/g, " ")
     .replace(/\s+/g, " ").trim();
 }
 function cardNum(t: string): string | null {
   const m = t.match(/(\d{1,4})\s*\/\s*\d{1,4}/);
   return m ? String(parseInt(m[1], 10)) : null;
+}
+// Same condition-pricing as the rest of the portal (engine.js COND_FACTORS): a card's
+// market is its NM price scaled by condition. Parsed from the listing title (eBay's
+// `condition` field only says Ungraded/Graded); default NM when unstated, like the portal.
+const COND_FACTORS: Record<string, number> = { NM: 1.0, LP: 0.9, MP: 0.75, HP: 0.6, DMG: 0.5 };
+function condFromTitle(t: string): string {
+  // Drop "100 HP" / "50 HP" first — that's the card's hit points, not the HP (heavily-played) grade.
+  const s = t.toLowerCase().replace(/\b\d+\s*hp\b/g, " ");
+  if (/\bdmg\b|\bdamaged\b|\bpoor\b/.test(s)) return "DMG";
+  if (/\bhp\b|heavily\s*played|heavy\s*play/.test(s)) return "HP";
+  if (/\bmp\b|moderately\s*played|mod(erate)?\s*play/.test(s)) return "MP";
+  if (/\blp\b|lightly\s*played|light\s*play|\bplayed\b/.test(s)) return "LP";
+  return "NM";
+}
+// Price-significant variants. If the listing asserts one the comp product doesn't (or
+// vice-versa), the fuzzy match grabbed the wrong variant — reject it.
+function variantFlags(s: string) {
+  const t = s.toLowerCase();
+  return {
+    first: /1st\s*ed|first\s*ed/.test(t),
+    shadowless: /shadowless/.test(t),
+    jumbo: /jumbo|oversized|oversize/.test(t),
+    reverse: /reverse\s*-?\s*holo|\brev\s*holo/.test(t),
+  };
 }
 // PriceCharting bracket variants that command big premiums; if the product carries one
 // the listing title never mentions, the fuzzy match grabbed the wrong (pricier) variant.
@@ -139,7 +164,7 @@ async function compBatch(admin: any, pcToken: string, keys: string[], queries: R
   return out;
 }
 
-async function radar(admin: any, token: string, pcToken: string, minutes: number, opts: { mkt?: string; dealPct?: number; floor?: number; cap?: number; maxItems?: number }) {
+async function radar(admin: any, token: string, pcToken: string, minutes: number, opts: { mkt?: string; dealPct?: number; floor?: number; cap?: number; maxItems?: number; comp?: boolean }) {
   const mkt = opts.mkt || "EBAY_US";
   const dealPct = opts.dealPct ?? 0.25;
   const floor = opts.floor ?? 5;
@@ -158,6 +183,7 @@ async function radar(admin: any, token: string, pcToken: string, minutes: number
   }
   items.sort((a, b) => (a.endDate || "").localeCompare(b.endDate || ""));
 
+  const doComp = opts.comp !== false;   // false = listings only (fast); true = pull + price
   const queries: Record<string, string> = {};
   for (const it of items) {
     const stripped = stripTitle(it.title);
@@ -165,25 +191,31 @@ async function radar(admin: any, token: string, pcToken: string, minutes: number
     it._key = (it._tier === "loose" ? "raw:" : "grd:") + stripped.toLowerCase();
     it._num = cardNum(it.title);
     it._ttoks = toks(stripped);
+    it._cond = condFromTitle(it.title);
+    it._vf = variantFlags(it.title);
     if (it._tier) queries[it._key] = "pokemon " + stripped;
   }
-  const comps = await compBatch(admin, pcToken, Object.keys(queries), queries, cap);
+  const comps = doComp ? await compBatch(admin, pcToken, Object.keys(queries), queries, cap) : {};
 
   let deals = 0;
   const rows = items.map((it) => {
-    const c = it._tier ? comps[it._key] : null;
+    const c = doComp && it._tier ? comps[it._key] : null;
     let market: number | null = null, matched = false;
     if (c) {
-      market = it._tier === "psa10" ? c.psa10 : it._tier === "psa9" ? c.psa9 : c.loose;
+      const raw = it._tier === "psa10" ? c.psa10 : it._tier === "psa9" ? c.psa9 : c.loose;
+      // Condition multiplier applies only to ungraded prices — a slab's grade sets its price.
+      market = (it._tier === "loose" && raw != null) ? Math.round(raw * (COND_FACTORS[it._cond] || 1) * 100) / 100 : raw;
       const prodRaw = (c.product || "").toLowerCase();
       const tl = it.title.toLowerCase();
       const hay = (prodRaw + " " + (c.console || "")).toLowerCase();
       const jpBad = /japan|chinese|korean/.test(hay) && !/japan|chinese|korean/.test(tl);
       const premBad = PREM.some((k) => prodRaw.includes(k) && !tl.includes(k) && !tl.includes(k.replace("-", " ")));
+      const pf = variantFlags(hay), tf = it._vf;
+      const variantBad = tf.first !== pf.first || tf.shadowless !== pf.shadowless || tf.jumbo !== pf.jumbo || tf.reverse !== pf.reverse;
       const ptoks = new Set(toks((c.product || "") + " " + (c.console || "")));
       const share = it._ttoks.filter((w: string) => ptoks.has(w)).length;
       const numOk = it._num ? hay.includes(it._num) : false;
-      matched = !jpBad && !premBad && ((numOk && share >= 1) || (!it._num && share >= 2));
+      matched = !jpBad && !premBad && !variantBad && ((numOk && share >= 1) || (!it._num && share >= 2));
     }
     const eff = (it.curBid ?? 0) + (it.ship ?? 0);
     let deltaPct: number | null = null, deal = false;
@@ -194,12 +226,12 @@ async function radar(admin: any, token: string, pcToken: string, minutes: number
     }
     return {
       title: it.title, url: it.url, img: it.img, endDate: it.endDate, bids: it.bids,
-      condition: it.condition, curBid: it.curBid, ship: it.ship, eff: Math.round(eff * 100) / 100,
+      condition: it.condition, cond: it._cond, curBid: it.curBid, ship: it.ship, eff: Math.round(eff * 100) / 100,
       tier: it._tier, market, product: c?.product || null, console: c?.console || null,
       matched, deltaPct: deltaPct != null ? Math.round(deltaPct * 1000) / 1000 : null, deal,
     };
   });
-  return { minutes, total, pulled: items.length, comped: Object.keys(comps).length, deals, rows };
+  return { minutes, total, pulled: items.length, didComp: doComp, comped: Object.keys(comps).length, deals, rows };
 }
 
 const admin = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -221,8 +253,9 @@ Deno.serve(async (req: Request) => {
     if (req.method === "GET" && url.searchParams.get("radartest")) {
       const a = admin();
       const min = Math.min(Math.max(parseInt(url.searchParams.get("radartest")!, 10) || 15, 1), 60);
+      const comp = url.searchParams.get("comp") === "1";
       const token = await appToken(a); const pc = await pcTokenOf(a);
-      const res = await radar(a, token, pc, min, { cap: 60, maxItems: 200 });
+      const res = await radar(a, token, pc, min, { cap: 60, maxItems: 200, comp });
       return json(res);
     }
     if (req.method !== "POST") return json({ error: "POST only" }, 405);
@@ -238,6 +271,7 @@ Deno.serve(async (req: Request) => {
       const res = await radar(a, token, pc, min, {
         mkt: body.marketplace, dealPct: body.dealPct != null ? +body.dealPct : undefined,
         floor: body.floor != null ? +body.floor : undefined, cap: body.cap != null ? +body.cap : undefined,
+        comp: body.comp,
       });
       return json(res);
     }
