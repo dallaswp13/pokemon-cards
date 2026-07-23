@@ -524,3 +524,46 @@ td .filecell button.on { background: color-mix(in srgb, var(--dc, var(--accent))
 
 .demo-note { background: var(--selected-bg); border: 1px solid var(--accent); border-radius: 10px;
   padding: 8px 14px; font-size: 13px; margin-bottom: 12px; }
+
+/* ── Radar: eBay auctions ending soon ─────────────────────────────────────── */
+#view-radar .pos { color: var(--money); }
+#view-radar .neg { color: var(--danger); }
+.radar-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.radar-head h2 { margin: 0 0 2px; font-size: 20px; font-weight: 800; }
+.radar-head p { margin: 0; font-size: 13px; max-width: 60ch; }
+.radar-ctrl { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.rd-wins { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.rd-seg { border: none; border-radius: 0; height: 40px; padding: 0 14px; background: transparent; color: var(--text-2); font-weight: 600; }
+.rd-seg + .rd-seg { border-left: 1px solid var(--border); }
+.rd-seg.active { background: var(--accent); color: #fff; }
+.rd-seg:hover:not(.active) { color: var(--text); border-color: transparent; }
+.rd-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+.rd-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+.radar-sub { font-size: 13px; color: var(--text-2); margin-bottom: 12px; }
+#radar-list { display: flex; flex-direction: column; gap: 6px; }
+.radar-empty { padding: 40px 0; text-align: center; }
+.radar-row { display: grid; grid-template-columns: 58px 44px minmax(0,1fr) auto 92px; align-items: center; gap: 12px;
+  padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; text-decoration: none; color: var(--text); }
+.radar-row:hover { border-color: var(--accent); }
+.radar-row.deal { border-color: rgba(61,220,132,0.4); background: linear-gradient(90deg, rgba(61,220,132,0.10), transparent 60%); }
+.rd-eta { font-size: 13px; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; text-align: center; }
+.rd-eta.urgent { color: var(--danger); }
+.rd-eta.ended { color: var(--text-3); text-decoration: line-through; }
+.rd-img { width: 44px; height: 44px; object-fit: contain; border-radius: 6px; background: var(--surface-raised); }
+.rd-img.noimg { display: flex; align-items: center; justify-content: center; color: var(--text-3); }
+.rd-main { min-width: 0; }
+.rd-title { display: block; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rd-meta { display: block; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rd-tier { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 4px; background: var(--surface-raised); border: 1px solid var(--border-strong); font-size: 10px; font-weight: 700; color: var(--text-2); }
+.rd-nums { text-align: right; display: flex; flex-direction: column; gap: 1px; white-space: nowrap; }
+.rd-bid { font-size: 13.5px; font-weight: 700; }
+.rd-mkt { font-size: 11.5px; }
+.rd-under { text-align: right; font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; }
+@media (max-width: 760px) {
+  .radar-row { grid-template-columns: 50px minmax(0,1fr) auto; grid-template-areas: "eta main under" "eta nums under"; row-gap: 2px; }
+  .rd-img { display: none; }
+  .rd-eta { grid-area: eta; }
+  .rd-main { grid-area: main; }
+  .rd-nums { grid-area: nums; flex-direction: row; gap: 8px; text-align: left; }
+  .rd-under { grid-area: under; }
+}
